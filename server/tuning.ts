@@ -1,18 +1,26 @@
+import type { Advice, Summary, Telemetry } from "../src/types/telemetry";
+
 const MAX_WINDOW = 480;
 
+type MeasuredTelemetry = Telemetry & {
+  effectiveSpeedKmh: number;
+};
+
 export class TelemetryWindow {
+  private samples: Telemetry[];
+
   constructor() {
     this.samples = [];
   }
 
-  add(sample) {
+  add(sample: Telemetry) {
     this.samples.push(sample);
     if (this.samples.length > MAX_WINDOW) {
       this.samples.splice(0, this.samples.length - MAX_WINDOW);
     }
   }
 
-  summary() {
+  summary(): Summary | null {
     if (this.samples.length === 0) {
       return null;
     }
@@ -20,9 +28,9 @@ export class TelemetryWindow {
     const measuredSamples = withInferredSpeed(this.samples);
     const active = measuredSamples.filter((sample) => sample.IsRaceOn === 1 && sample.effectiveSpeedKmh > 20);
     const samples = active.length > 8 ? active : measuredSamples;
-    const avg = (field) => averageField(samples, field);
-    const max = (field) => maxField(samples, field);
-    const min = (field) => minField(samples, field);
+    const avg = (field: keyof MeasuredTelemetry) => averageField(samples, field);
+    const max = (field: keyof MeasuredTelemetry) => maxField(samples, field);
+    const min = (field: keyof MeasuredTelemetry) => minField(samples, field);
 
     return {
       sampleCount: this.samples.length,
@@ -54,7 +62,7 @@ export class TelemetryWindow {
   }
 }
 
-export function buildTuningAdvice(current, summary) {
+export function buildTuningAdvice(current: Telemetry | null, summary: Summary | null): Advice[] {
   if (!current || !summary || current.IsRaceOn !== 1) {
     return [
       {
@@ -65,7 +73,7 @@ export function buildTuningAdvice(current, summary) {
     ];
   }
 
-  const advice = [];
+  const advice: Advice[] = [];
   const fastEnough = summary.avgSpeedKmh > 35;
 
   if (fastEnough && summary.avgSlipBalance > 0.12) {
@@ -135,12 +143,12 @@ export function buildTuningAdvice(current, summary) {
   return advice.slice(0, 4);
 }
 
-function durationSeconds(samples) {
+function durationSeconds(samples: Telemetry[]) {
   if (samples.length < 2) return 0;
-  return (samples[samples.length - 1].receivedAt - samples[0].receivedAt) / 1000;
+  return ((samples[samples.length - 1]?.receivedAt ?? 0) - (samples[0]?.receivedAt ?? 0)) / 1000;
 }
 
-function withInferredSpeed(samples) {
+function withInferredSpeed(samples: Telemetry[]): MeasuredTelemetry[] {
   return samples.map((sample, index) => {
     const packetSpeed = finiteNumber(sample.speedKmh);
     const inferredSpeed = inferSpeedKmh(samples[index - 1], sample);
@@ -152,9 +160,9 @@ function withInferredSpeed(samples) {
   });
 }
 
-function inferSpeedKmh(previous, sample) {
+function inferSpeedKmh(previous: Telemetry | undefined, sample: Telemetry) {
   if (!previous) return 0;
-  const elapsedSeconds = (sample.receivedAt - previous.receivedAt) / 1000;
+  const elapsedSeconds = ((sample.receivedAt ?? 0) - (previous.receivedAt ?? 0)) / 1000;
   if (elapsedSeconds <= 0) return 0;
 
   const distanceMeters = Math.hypot(
@@ -166,28 +174,28 @@ function inferSpeedKmh(previous, sample) {
   return (distanceMeters / elapsedSeconds) * 3.6;
 }
 
-function averageField(samples, field) {
+function averageField(samples: MeasuredTelemetry[], field: keyof MeasuredTelemetry) {
   const values = finiteValues(samples, field);
   if (values.length === 0) return 0;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
-function maxField(samples, field) {
+function maxField(samples: MeasuredTelemetry[], field: keyof MeasuredTelemetry) {
   const values = finiteValues(samples, field);
   return values.length ? Math.max(...values) : 0;
 }
 
-function minField(samples, field) {
+function minField(samples: MeasuredTelemetry[], field: keyof MeasuredTelemetry) {
   const values = finiteValues(samples, field);
   return values.length ? Math.min(...values) : 0;
 }
 
-function finiteValues(samples, field) {
+function finiteValues(samples: MeasuredTelemetry[], field: keyof MeasuredTelemetry) {
   return samples
     .map((sample) => finiteNumber(sample[field]))
     .filter((value) => Number.isFinite(value));
 }
 
-function finiteNumber(value) {
-  return Number.isFinite(value) ? value : 0;
+function finiteNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }

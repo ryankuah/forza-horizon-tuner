@@ -4,6 +4,8 @@ Local telemetry dashboard and early setup advisor for Forza Horizon 6.
 
 Frontend stack: Vite, React, TypeScript, and Tailwind CSS.
 
+Desktop stack: Electron, electron-builder, and electron-updater.
+
 ## Run
 
 ```bash
@@ -15,6 +17,20 @@ Open the Vite URL shown in the terminal, usually:
 
 ```text
 http://localhost:5173
+```
+
+## Run The Desktop App
+
+```bash
+npm run dev:electron
+```
+
+Electron starts the local telemetry backend automatically. Session data is stored in the app user-data directory in packaged builds.
+
+To test with simulated telemetry in Electron:
+
+```bash
+npm run simulate:electron
 ```
 
 ## Steam Deck / Forza Setup
@@ -42,6 +58,23 @@ npm run typecheck
 npm run build
 ```
 
+## Desktop Builds And Releases
+
+Build local installers:
+
+```bash
+npm run dist
+```
+
+Create a GitHub release by pushing a version tag:
+
+```bash
+npm version patch
+git push origin main --follow-tags
+```
+
+The release workflow builds macOS, Windows, and Linux artifacts. `electron-updater` checks GitHub Releases when the packaged app starts. GitHub-hosted auto updates require public release artifacts; private repositories need a separate public update feed or hosted update server.
+
 ## What It Does Now
 
 - Receives the official 324-byte FH6 Data Out UDP packet.
@@ -54,19 +87,9 @@ npm run build
 
 The map base image lives at `public/fh6-map-reveal.jpg`.
 
-The app includes a hard-coded FH6 world-to-map projection in `src/main.tsx`. The current default uses a single linked scale with zero cross-axis shear:
+The app includes a hard-coded FH6 world-to-map projection in `src/features/map/mapGeometry.ts`. The current default uses a single linked scale with zero cross-axis shear:
 
 ```text
 mapX = PositionX * 0.13158 + 1160.32838497
 mapY = PositionZ * -0.13158 + 1321.0827332
 ```
-
-Open the temporary calibration page at:
-
-```text
-http://localhost:5173/calibrate-map
-```
-
-Drive to a known spot, click that same spot on the map, and repeat. With two points the page estimates a scale/rotation/offset transform; with three or more points it solves a full affine transform.
-
-Use `Save` to apply a refinement in the current browser, or copy the generated `DEFAULT_MAP_CALIBRATION` values into `src/main.tsx`.

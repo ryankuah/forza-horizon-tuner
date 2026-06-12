@@ -1,17 +1,43 @@
 import dgram from "node:dgram";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { createTelemetryDatabase } from "./database.js";
-import { enrichTelemetry, PACKET_SIZE, parseForzaPacket } from "./forzaPacket.js";
-import { buildTuningAdvice, TelemetryWindow } from "./tuning.js";
+import { createTelemetryDatabase } from "./database";
+import { enrichTelemetry, parseForzaPacket, type RawTelemetry } from "./forzaPacket";
+import { buildTuningAdvice, TelemetryWindow } from "./tuning";
+import type { Advice, AppState, Summary, Telemetry } from "../src/types/telemetry";
 
 const UDP_PORT = Number(process.env.FORZA_UDP_PORT || 9999);
 const HTTP_PORT = Number(process.env.HTTP_PORT || 3001);
 const WS_PORT = Number(process.env.WS_PORT || 8765);
 const SIMULATE = process.env.SIMULATE === "1";
-const state = {
+type ServerState = {
+  connected: boolean;
+  packets: number;
+  badPackets: number;
+  lastPacketAt: number | null;
+  lastSource: string | null;
+  last: Telemetry | null;
+  summary: Summary | null;
+  advice: Advice[];
+};
+
+type PendingSession = {
+  id: string;
+  startedAt: number;
+  persisted: boolean;
+};
+
+type TelemetryInput = {
+  telemetry: Telemetry;
+  receivedAt: number;
+  source: string;
+  rawPacket?: Buffer | null;
+};
+
+const state: ServerState = {
   connected: false,
   packets: 0,
   badPackets: 0,
@@ -67,6 +93,60 @@ app.get("/api/sessions/:id", (req, res) => {
   });
 });
 
+app.get("/api/sessions/:id/stream", async (req, res) => {
+  const session = database.getSession(req.params.id);
+  if (!session) {
+    res.status(404).json({ error: "Session not found" });
+    return;
+  }
+
+  res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  const writeLine = async (value: unknown) => {
+    if (res.destroyed) return false;
+    if (!res.write(`${JSON.stringify(value)}\n`)) {
+      await once(res, "drain");
+    }
+    return !res.destroyed;
+  };
+
+  const sessionWindow = new TelemetryWindow();
+  let sampleCount = 0;
+
+  try {
+    if (!await writeLine({ type: "session", session })) return;
+
+    for (const row of database.iterateSampleJson(req.params.id)) {
+      const telemetry = JSON.parse(row.telemetryJson) as Telemetry;
+      sessionWindow.add(telemetry);
+      sampleCount += 1;
+
+      if (!await writeLine({ type: "sample", telemetry })) return;
+    }
+
+    await writeLine({
+      type: "done",
+      sampleCount,
+      summary: sessionWindow.summary()
+    });
+    res.end();
+  } catch (error) {
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Failed to stream session" });
+      return;
+    }
+
+    await writeLine({
+      type: "error",
+      error: error instanceof Error ? error.message : String(error)
+    });
+    res.end();
+  }
+});
+
 app.post("/api/sessions/new", (_req, res) => {
   startNewSession("manual", Date.now());
   broadcast();
@@ -88,18 +168,18 @@ udp.on("message", (message, remote) => {
     const telemetry = enrichTelemetry(parseForzaPacket(message), receivedAt);
     maybeStartNewSessionForTelemetry(telemetry, receivedAt);
     handleTelemetry({ telemetry, receivedAt, source, rawPacket: message });
-  } catch (error) {
-    state.badPackets += 1;
-    if (currentSession.persisted) {
-      database.recordBadPacket({
-        sessionId: currentSession.id,
-        receivedAt,
-        source,
-        rawPacket: message,
-        error: error.message
-      });
-    }
-    console.error(`Failed to parse UDP packet: ${error.message}`);
+    } catch (error) {
+      state.badPackets += 1;
+      if (currentSession.persisted) {
+        database.recordBadPacket({
+          sessionId: currentSession.id,
+          receivedAt,
+          source,
+          rawPacket: message,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    console.error(`Failed to parse UDP packet: ${error instanceof Error ? error.message : String(error)}`);
   }
 });
 
@@ -121,7 +201,7 @@ if (SIMULATE) {
   startSimulator();
 }
 
-function snapshot() {
+function snapshot(): AppState {
   return {
     connected: state.connected,
     packets: state.packets,
@@ -149,7 +229,7 @@ function broadcast() {
 }
 
 function localIps() {
-  const ips = [];
+  const ips: string[] = [];
   for (const interfaces of Object.values(os.networkInterfaces())) {
     for (const iface of interfaces || []) {
       if (iface.family === "IPv4" && !iface.internal) {
@@ -183,13 +263,13 @@ function logStartup() {
   console.log("");
 }
 
-function maybeStartNewSessionForTelemetry(telemetry, receivedAt) {
+function maybeStartNewSessionForTelemetry(telemetry: Telemetry, receivedAt: number) {
   if (telemetry.IsRaceOn === 1 && state.last?.IsRaceOn === 1 && carIdentityChanged(state.last, telemetry)) {
     startNewSession("car_change", receivedAt);
   }
 }
 
-function startNewSession(reason, startedAt = Date.now()) {
+function startNewSession(reason: string, startedAt = Date.now()) {
   if (currentSession.persisted) {
     database.endSession(currentSession.id, startedAt);
   }
@@ -206,7 +286,7 @@ function startNewSession(reason, startedAt = Date.now()) {
   console.log(`Prepared telemetry session ${currentSession.id} (${reason})`);
 }
 
-function createPendingSession(startedAt = Date.now()) {
+function createPendingSession(startedAt = Date.now()): PendingSession {
   return {
     id: randomUUID(),
     startedAt,
@@ -214,7 +294,7 @@ function createPendingSession(startedAt = Date.now()) {
   };
 }
 
-function ensureCurrentSession(receivedAt) {
+function ensureCurrentSession(receivedAt: number) {
   if (!currentSession.persisted) {
     database.startSession(currentSession.startedAt, currentSession.id);
     currentSession.persisted = true;
@@ -223,13 +303,13 @@ function ensureCurrentSession(receivedAt) {
   return currentSession;
 }
 
-function carIdentityChanged(previous, telemetry) {
+function carIdentityChanged(previous: Telemetry, telemetry: Telemetry) {
   return previous.CarOrdinal !== telemetry.CarOrdinal
     || previous.CarPerformanceIndex !== telemetry.CarPerformanceIndex
     || previous.DrivetrainType !== telemetry.DrivetrainType;
 }
 
-function handleTelemetry({ telemetry, receivedAt, source, rawPacket = null }) {
+function handleTelemetry({ telemetry, receivedAt, source, rawPacket = null }: TelemetryInput) {
   state.connected = true;
   state.lastPacketAt = receivedAt;
   state.lastSource = source;
@@ -256,7 +336,7 @@ function handleTelemetry({ telemetry, receivedAt, source, rawPacket = null }) {
   broadcast();
 }
 
-function summarizeSamples(samples) {
+function summarizeSamples(samples: Telemetry[]) {
   const sessionWindow = new TelemetryWindow();
   for (const sample of samples) {
     sessionWindow.add(sample);
@@ -264,10 +344,10 @@ function summarizeSamples(samples) {
   return sessionWindow.summary();
 }
 
-function clampSampleLimit(value) {
+function clampSampleLimit(value: unknown) {
   const limit = Number(value || 5000);
   if (!Number.isFinite(limit)) return 5000;
-  return Math.min(50000, Math.max(1, Math.round(limit)));
+  return Math.min(250000, Math.max(1, Math.round(limit)));
 }
 
 function startSimulator() {
@@ -287,7 +367,7 @@ function startSimulator() {
     const velocityZ = (positionZ - previousPositionZ) * 20;
     const frontBias = Math.sin(phase / 3) * 0.18;
     const rearBias = Math.cos(phase / 4) * 0.16;
-    const telemetry = enrichTelemetry({
+    const rawTelemetry: RawTelemetry = {
       IsRaceOn: 1,
       TimestampMS: tick * 50,
       EngineMaxRpm: 8200,
@@ -376,11 +456,12 @@ function startSimulator() {
       Steer: Math.round(Math.sin(phase / 1.5) * 80),
       NormalizedDrivingLine: 0,
       NormalizedAIBrakeDifference: 0
-    });
+    };
+    const telemetry = enrichTelemetry(rawTelemetry);
 
     handleTelemetry({
       telemetry,
-      receivedAt: telemetry.receivedAt,
+      receivedAt: telemetry.receivedAt ?? Date.now(),
       source: "simulator"
     });
   }, 50);

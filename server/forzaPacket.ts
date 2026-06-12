@@ -1,6 +1,35 @@
+import type { Telemetry } from "../src/types/telemetry";
+
 export const PACKET_SIZE = 324;
 
-const fields = [
+type DerivedTelemetryField =
+  | "speedKmh"
+  | "speedMph"
+  | "powerHp"
+  | "torqueNm"
+  | "throttlePct"
+  | "brakePct"
+  | "steerPct"
+  | "frontSlip"
+  | "rearSlip"
+  | "slipBalance"
+  | "frontTemp"
+  | "rearTemp"
+  | "tempBalance"
+  | "suspensionAvgFront"
+  | "suspensionAvgRear"
+  | "receivedAt";
+
+export type RawTelemetry = Omit<Telemetry, DerivedTelemetryField>;
+
+type PacketReaderType = "i32" | "u32" | "f32" | "u16" | "u8" | "i8";
+type PacketField = [keyof RawTelemetry, PacketReaderType];
+type PacketReader = {
+  size: number;
+  read: (buffer: Buffer, offset: number) => number;
+};
+
+const fields: PacketField[] = [
   ["IsRaceOn", "i32"],
   ["TimestampMS", "u32"],
   ["EngineMaxRpm", "f32"],
@@ -91,7 +120,7 @@ const fields = [
   ["NormalizedAIBrakeDifference", "i8"]
 ];
 
-const readers = {
+const readers: Record<PacketReaderType, PacketReader> = {
   i32: { size: 4, read: (buffer, offset) => buffer.readInt32LE(offset) },
   u32: { size: 4, read: (buffer, offset) => buffer.readUInt32LE(offset) },
   f32: { size: 4, read: (buffer, offset) => buffer.readFloatLE(offset) },
@@ -100,13 +129,13 @@ const readers = {
   i8: { size: 1, read: (buffer, offset) => buffer.readInt8(offset) }
 };
 
-export function parseForzaPacket(buffer) {
+export function parseForzaPacket(buffer: Buffer): RawTelemetry {
   if (buffer.length !== PACKET_SIZE) {
     throw new Error(`Invalid packet size: expected ${PACKET_SIZE}, got ${buffer.length}`);
   }
 
   let offset = 0;
-  const data = {};
+  const data = {} as RawTelemetry;
 
   for (const [name, type] of fields) {
     const reader = readers[type];
@@ -117,7 +146,7 @@ export function parseForzaPacket(buffer) {
   return data;
 }
 
-export function enrichTelemetry(data, receivedAt = Date.now()) {
+export function enrichTelemetry(data: RawTelemetry, receivedAt = Date.now()): Telemetry {
   const velocitySpeed = magnitude([
     data.VelocityX,
     data.VelocityY,
@@ -162,18 +191,18 @@ export function enrichTelemetry(data, receivedAt = Date.now()) {
   };
 }
 
-function average(values) {
+function average(values: number[]) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
-function averageAbs(values) {
+function averageAbs(values: number[]) {
   return values.reduce((sum, value) => sum + Math.abs(value), 0) / values.length;
 }
 
-function magnitude(values) {
+function magnitude(values: number[]) {
   return Math.sqrt(values.reduce((sum, value) => sum + value ** 2, 0));
 }
 
-function usablePositive(value) {
+function usablePositive(value: number) {
   return Number.isFinite(value) && value > 0.01;
 }
