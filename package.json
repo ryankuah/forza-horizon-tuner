@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Local telemetry dashboard and setup advisor for Forza Horizon.",
   "author": "Ryan Kuah",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ryankuah/forza-horizon-tuner.git"
+  },
   "private": false,
   "type": "module",
   "main": "dist-electron/main.cjs",
