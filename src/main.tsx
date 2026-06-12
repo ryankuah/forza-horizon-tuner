@@ -250,7 +250,11 @@ type CornerEffect =
   | "straight"
   | "leftCorner"
   | "rightCorner";
-type MapPathEffect = MapEffect | CornerEffect;
+type CornerPhaseEffect =
+  | "cornerEntry"
+  | "cornerMid"
+  | "cornerExit";
+type MapPathEffect = MapEffect | CornerEffect | CornerPhaseEffect;
 type PathRenderSegment = {
   effect: MapPathEffect;
   points: SvgPoint[];
@@ -945,17 +949,42 @@ function App() {
   const displayState = selectedSessionId === "live"
     ? state
     : buildHistoricalState(state, sessionDetail, telemetry);
+  const handleSessionChange = (sessionId: SessionSelection) => {
+    setSelectedSessionId(sessionId);
+    setHoverIndex(null);
+    setSelectedIndex(null);
+  };
+  const handleNewSession = async () => {
+    const created = await createNewSession();
+    const nextSessions = await fetchSessions();
+    setSessions(nextSessions);
+    setSelectedSessionId(created ? "live" : nextSessions[0]?.id ?? "live");
+    setHoverIndex(null);
+    setSelectedIndex(null);
+    setPath([]);
+  };
 
   return (
     <main
-      className="h-screen overflow-hidden bg-[#101312] bg-[radial-gradient(circle_at_80%_10%,rgba(199,58,31,0.18),transparent_28%),linear-gradient(120deg,rgba(35,75,69,0.45),transparent_38%)] p-4 text-[#e8ecef] antialiased md:p-6"
+      className="flex h-screen flex-col gap-4 overflow-hidden bg-[#101312] bg-[radial-gradient(circle_at_80%_10%,rgba(199,58,31,0.18),transparent_28%),linear-gradient(120deg,rgba(35,75,69,0.45),transparent_38%)] p-4 text-[#e8ecef] antialiased md:p-6"
       onPointerMove={(event) => {
         if (!(event.target as Element).closest("[data-path-surface]")) {
           setHoverIndex(null);
         }
       }}
     >
-      <section className="grid h-full min-h-0 gap-4 lg:grid-cols-2">
+      <header className={`${panelClass} shrink-0 p-4`}>
+        <SessionSwitcher
+          sessions={sessions}
+          selectedSessionId={selectedSessionId}
+          canSelectLive={displayState.connected}
+          liveSessionId={displayState.sessionId}
+          onSessionChange={handleSessionChange}
+          onNewSession={handleNewSession}
+        />
+      </header>
+
+      <section className="grid min-h-0 flex-1 gap-4 lg:grid-cols-2">
         <section className="grid min-h-0 min-w-0 grid-rows-[minmax(0,7fr)_minmax(150px,3fr)] gap-4">
           <div className="min-h-0">
             <PathPanel
@@ -975,22 +1004,6 @@ function App() {
             onTabChange={setRightPanelTab}
             telemetry={telemetry}
             state={displayState}
-            sessions={sessions}
-            selectedSessionId={selectedSessionId}
-            onSessionChange={(sessionId) => {
-              setSelectedSessionId(sessionId);
-              setHoverIndex(null);
-              setSelectedIndex(null);
-            }}
-            onNewSession={async () => {
-              const created = await createNewSession();
-              const nextSessions = await fetchSessions();
-              setSessions(nextSessions);
-              setSelectedSessionId(created ? "live" : nextSessions[0]?.id ?? "live");
-              setHoverIndex(null);
-              setSelectedIndex(null);
-              setPath([]);
-            }}
           />
         </section>
       </section>
@@ -1093,7 +1106,12 @@ function PathPanel({
   const dragRef = React.useRef<MapDragState | null>(null);
   const [viewBox, setViewBox] = React.useState<SvgViewBox>(() => defaultSessionMapViewBox());
   const geometry = buildPathGeometry(path);
+  const cornerSegments = buildCornerSegments(path);
+  const selectedCorner = selectedIndex === null ? null : cornerSegmentForIndex(cornerSegments, selectedIndex);
   const renderSegments = buildPathRenderSegments(path, geometry.points, "corners");
+  const selectedCornerSegments = selectedCorner
+    ? buildSelectedCornerPhaseSegments(geometry.points, selectedCorner)
+    : [];
   const currentPoint = geometry.points[geometry.points.length - 1];
   const currentSample = path[path.length - 1];
   const hoverPoint = hoverIndex === null ? null : geometry.points[hoverIndex];
@@ -1103,8 +1121,14 @@ function PathPanel({
   const canZoomIn = viewBox.width > geometry.width / MAX_MAP_ZOOM;
   const canZoomOut = viewBox.width < geometry.width;
   const zoomPct = mapZoomPercent(viewBox);
+  const markerScale = mapMarkerScale(viewBox);
 
   React.useEffect(() => {
+    if (selectedCorner && geometry.points.length) {
+      setViewBox(viewBoxForPointRange(geometry.points, selectedCorner.startIndex, selectedCorner.endIndex));
+      return;
+    }
+
     if (!currentPoint) {
       setViewBox(defaultSessionMapViewBox());
       return;
@@ -1120,7 +1144,7 @@ function PathPanel({
 
       return centerViewBoxAtPoint(currentPoint, width, height);
     });
-  }, [currentPoint?.x, currentPoint?.y]);
+  }, [currentPoint?.x, currentPoint?.y, selectedCorner?.id, geometry.points.length]);
 
   function handlePointerMove(event: React.PointerEvent<SVGSVGElement>) {
     if (!svgRef.current) return;
@@ -1247,22 +1271,37 @@ function PathPanel({
                   points={segment.points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}
                 />
               ))}
+              {selectedCornerSegments.length ? (
+                <>
+                  <polyline
+                    className="fill-none stroke-[#101312]/80 [stroke-linecap:round] [stroke-linejoin:round] [stroke-width:9] [vector-effect:non-scaling-stroke]"
+                    points={geometry.points.slice(selectedCorner!.startIndex, selectedCorner!.endIndex).map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}
+                  />
+                  {selectedCornerSegments.map((segment, index) => (
+                    <polyline
+                      key={`selected-${segment.effect}-${index}`}
+                      className={[
+                        "fill-none [stroke-linecap:round] [stroke-linejoin:round] [stroke-width:5] [vector-effect:non-scaling-stroke]",
+                        mapPathStrokeClass(segment.effect)
+                      ].join(" ")}
+                      points={segment.points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}
+                    />
+                  ))}
+                </>
+              ) : null}
             </>
           ) : (
             <text className="fill-[#f5f7f6] text-5xl font-bold [paint-order:stroke] [stroke:#070a09] [stroke-width:8px]" x="50%" y="50%" dominantBaseline="middle" textAnchor="middle">
               Waiting for position samples
             </text>
           )}
-          {selectedPoint && selectedSample ? (
-            <PathSelectionMarker point={selectedPoint} />
-          ) : null}
           {hoverPoint && hoverSample ? (
-            <MfdCarMarker point={hoverPoint} telemetry={hoverSample.telemetry} variant="hover" />
+            <MfdCarMarker point={hoverPoint} telemetry={hoverSample.telemetry} variant="hover" scale={markerScale} />
           ) : null}
           {hoverPoint && hoverSample ? null : (selectedPoint && selectedSample) ? (
-            <MfdCarMarker point={selectedPoint} telemetry={selectedSample.telemetry} variant="selected" />
+            <MfdCarMarker point={selectedPoint} telemetry={selectedSample.telemetry} variant="selected" scale={markerScale} />
           ) : currentPoint && currentSample ? (
-            <MfdCarMarker point={currentPoint} telemetry={currentSample.telemetry} variant="current" />
+            <MfdCarMarker point={currentPoint} telemetry={currentSample.telemetry} variant="current" scale={markerScale} />
           ) : null}
         </svg>
         <MapControls
@@ -1278,7 +1317,7 @@ function PathPanel({
             );
           }}
         />
-        <MapLegend hasSelectedPoint={Boolean(selectedPoint)} />
+        <MapLegend hasSelectedPoint={Boolean(selectedPoint)} hasSelectedCorner={Boolean(selectedCorner)} />
       </div>
     </section>
   );
@@ -1363,16 +1402,17 @@ function MapControls({
   );
 }
 
-function PathSelectionMarker({ point }: { point: SvgPoint }) {
-  return (
-    <g transform={`translate(${point.x} ${point.y})`}>
-      <circle className="fill-[#f3d09b]/10 stroke-[#f3d09b] [stroke-dasharray:5_4] [stroke-width:2] [vector-effect:non-scaling-stroke]" r="24" />
-      <circle className="fill-[#101312] stroke-[#f3d09b] [stroke-width:2] [vector-effect:non-scaling-stroke]" r="5" />
-    </g>
-  );
-}
-
-function MfdCarMarker({ point, telemetry, variant }: { point: SvgPoint; telemetry: Telemetry; variant: "current" | "hover" | "selected" }) {
+function MfdCarMarker({
+  point,
+  telemetry,
+  variant,
+  scale
+}: {
+  point: SvgPoint;
+  telemetry: Telemetry;
+  variant: "current" | "hover" | "selected";
+  scale: number;
+}) {
   const rotation = yawToSvgDegrees(telemetry.Yaw);
   const tires = buildTireMfdData(telemetry);
   const tireLayout = [
@@ -1388,7 +1428,7 @@ function MfdCarMarker({ point, telemetry, variant }: { point: SvgPoint; telemetr
     : "fill-[#e46645]/12 stroke-[#e46645]/60";
 
   return (
-    <g transform={`translate(${point.x} ${point.y}) rotate(${rotation})`}>
+    <g className="pointer-events-none" transform={`translate(${point.x} ${point.y}) rotate(${rotation}) scale(${scale})`}>
       <circle className={`${ringClass} [stroke-width:1.5] [vector-effect:non-scaling-stroke]`} r={variant === "selected" ? 25 : variant === "hover" ? 23 : 21} />
       <rect className="fill-[#101312]/85 stroke-[#f5f7f6]/45 [stroke-width:1.2] [vector-effect:non-scaling-stroke]" x="-7" y="-18" width="14" height="36" rx="4" />
       <path className="fill-[#f3d09b] stroke-[#101312] [stroke-linejoin:round] [stroke-width:1] [vector-effect:non-scaling-stroke]" d="M 0 -23 L 5 -15 L -5 -15 Z" />
@@ -1419,11 +1459,18 @@ function yawToSvgDegrees(yaw: number) {
   return (yaw * 180) / Math.PI;
 }
 
-function MapLegend({ hasSelectedPoint }: { hasSelectedPoint: boolean }) {
+function MapLegend({ hasSelectedPoint, hasSelectedCorner }: { hasSelectedPoint: boolean; hasSelectedCorner: boolean }) {
   const items: { effect: MapPathEffect; label: string }[] = [
     { effect: "straight", label: "Straight" },
     { effect: "leftCorner", label: "Left corner" },
-    { effect: "rightCorner", label: "Right corner" }
+    { effect: "rightCorner", label: "Right corner" },
+    ...(hasSelectedCorner
+      ? [
+        { effect: "cornerEntry" as const, label: "Entry" },
+        { effect: "cornerMid" as const, label: "Mid-corner" },
+        { effect: "cornerExit" as const, label: "Exit" }
+      ]
+      : [])
   ];
 
   return (
@@ -1478,6 +1525,10 @@ function defaultSessionMapViewBox(): SvgViewBox {
 
 function mapZoomPercent(viewBox: SvgViewBox) {
   return Math.round((MAP_IMAGE_WIDTH / viewBox.width / CAR_FOLLOW_MAP_ZOOM) * 100);
+}
+
+function mapMarkerScale(viewBox: SvgViewBox) {
+  return (viewBox.width / (MAP_IMAGE_WIDTH / CAR_FOLLOW_MAP_ZOOM)) * 0.5;
 }
 
 function loadStoredMapViewBox(): SvgViewBox | null {
@@ -1595,6 +1646,80 @@ function buildCornerSegments(path: PathSample[]): CornerSegment[] {
       effect: run.effect,
       samples: path.slice(run.start, run.end)
     }));
+}
+
+function cornerSegmentForIndex(corners: CornerSegment[], index: number) {
+  return corners.find((corner) => index >= corner.startIndex && index < corner.endIndex) ?? null;
+}
+
+function buildSelectedCornerPhaseSegments(points: SvgPoint[], corner: CornerSegment): PathRenderSegment[] {
+  const cornerPoints = points.slice(corner.startIndex, corner.endIndex);
+  if (cornerPoints.length < 2) return [];
+
+  const totalDistance = pointPathDistance(cornerPoints);
+  if (totalDistance <= 0) {
+    return [{
+      effect: "cornerMid",
+      points: cornerPoints
+    }];
+  }
+
+  const segments: PathRenderSegment[] = [];
+  let distance = 0;
+
+  for (let index = 1; index < cornerPoints.length; index += 1) {
+    const previousPoint = cornerPoints[index - 1];
+    const point = cornerPoints[index];
+    distance += Math.hypot(point.x - previousPoint.x, point.y - previousPoint.y);
+
+    const effect = cornerPhaseAtProgress(distance / totalDistance);
+    const current = segments[segments.length - 1];
+
+    if (current && current.effect === effect) {
+      current.points.push(point);
+    } else {
+      segments.push({
+        effect,
+        points: [previousPoint, point]
+      });
+    }
+  }
+
+  return segments;
+}
+
+function cornerPhaseAtProgress(progress: number): CornerPhaseEffect {
+  if (progress < 0.34) return "cornerEntry";
+  if (progress < 0.67) return "cornerMid";
+  return "cornerExit";
+}
+
+function pointPathDistance(points: SvgPoint[]) {
+  let distance = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    distance += Math.hypot(points[index].x - points[index - 1].x, points[index].y - points[index - 1].y);
+  }
+  return distance;
+}
+
+function viewBoxForPointRange(points: SvgPoint[], startIndex: number, endIndex: number) {
+  const selectedPoints = points.slice(startIndex, endIndex);
+  if (!selectedPoints.length) return defaultSessionMapViewBox();
+
+  const minX = Math.min(...selectedPoints.map((point) => point.x));
+  const maxX = Math.max(...selectedPoints.map((point) => point.x));
+  const minY = Math.min(...selectedPoints.map((point) => point.y));
+  const maxY = Math.max(...selectedPoints.map((point) => point.y));
+  const padding = 90;
+  const width = Math.max(MAP_IMAGE_WIDTH / MAX_MAP_ZOOM, maxX - minX + padding * 2);
+  const height = Math.max(MAP_IMAGE_HEIGHT / MAX_MAP_ZOOM, maxY - minY + padding * 2);
+
+  return clampMapViewBox({
+    x: minX - padding,
+    y: minY - padding,
+    width,
+    height
+  });
 }
 
 function classifyMapEffect(telemetry: Telemetry): MapEffect {
@@ -1888,7 +2013,10 @@ function mapPathStrokeClass(effect: MapPathEffect) {
     wheelspin: "stroke-[#f7b84b]",
     straight: "stroke-[#d7c7ad]",
     leftCorner: "stroke-[#63da97]",
-    rightCorner: "stroke-[#e46645]"
+    rightCorner: "stroke-[#e46645]",
+    cornerEntry: "stroke-[#59a7ff]",
+    cornerMid: "stroke-[#f3d09b]",
+    cornerExit: "stroke-[#63da97]"
   }[effect];
 }
 
@@ -1900,7 +2028,10 @@ function mapPathSwatchClass(effect: MapPathEffect) {
     wheelspin: "bg-[#f7b84b]",
     straight: "bg-[#d7c7ad]",
     leftCorner: "bg-[#63da97]",
-    rightCorner: "bg-[#e46645]"
+    rightCorner: "bg-[#e46645]",
+    cornerEntry: "bg-[#59a7ff]",
+    cornerMid: "bg-[#f3d09b]",
+    cornerExit: "bg-[#63da97]"
   }[effect];
 }
 
@@ -2230,20 +2361,12 @@ function RightPanel({
   activeTab,
   onTabChange,
   telemetry,
-  state,
-  sessions,
-  selectedSessionId,
-  onSessionChange,
-  onNewSession
+  state
 }: {
   activeTab: RightPanelTab;
   onTabChange: (tab: RightPanelTab) => void;
   telemetry: Telemetry | null;
   state: AppState;
-  sessions: SessionSummary[];
-  selectedSessionId: SessionSelection;
-  onSessionChange: (sessionId: SessionSelection) => void;
-  onNewSession: () => void;
 }) {
   const tabs: { id: RightPanelTab; label: string; icon: React.ReactNode }[] = [
     { id: "car", label: "Car", icon: <Gauge size={16} /> },
@@ -2251,16 +2374,8 @@ function RightPanel({
   ];
 
   return (
-    <section className={`${panelClass} flex h-full min-h-0 flex-col p-5`}>
-      <div className="mb-4 grid shrink-0 gap-3">
-        <SessionSwitcher
-          sessions={sessions}
-          selectedSessionId={selectedSessionId}
-          canSelectLive={state.connected}
-          liveSessionId={state.sessionId}
-          onSessionChange={onSessionChange}
-          onNewSession={onNewSession}
-        />
+    <section className={`${panelClass} flex h-full min-h-0 flex-col p-3`}>
+      <div className="mb-3 shrink-0">
         <div className="flex rounded-lg border border-white/10 bg-[#070a09]/55 p-1" role="tablist" aria-label="Right panel views">
           {tabs.map((tab) => {
             const selected = activeTab === tab.id;
@@ -2294,7 +2409,7 @@ function RightPanel({
         id={`${activeTab}-panel`}
         aria-labelledby={`${activeTab}-tab`}
       >
-        <div className="flex flex-col gap-[18px] pb-2">
+        <div className="flex flex-col gap-4 pb-2">
           {activeTab === "data" ? (
             <TelemetryDashboard telemetry={telemetry} state={state} />
           ) : (
@@ -2368,6 +2483,60 @@ function SessionSwitcher({
 }
 
 function CarDataPanel({ telemetry }: { telemetry: Telemetry | null }) {
+  const frontCombinedSlip = telemetry ? average([
+    Math.abs(telemetry.TireCombinedSlipFrontLeft),
+    Math.abs(telemetry.TireCombinedSlipFrontRight)
+  ]) : undefined;
+  const rearCombinedSlip = telemetry ? average([
+    Math.abs(telemetry.TireCombinedSlipRearLeft),
+    Math.abs(telemetry.TireCombinedSlipRearRight)
+  ]) : undefined;
+  const frontSlipAngle = telemetry ? frontTireSlipAngle(telemetry) : undefined;
+  const rearSlipAngle = telemetry ? rearTireSlipAngle(telemetry) : undefined;
+  const tireTempDelta = telemetry ? telemetry.frontTemp - telemetry.rearTemp : undefined;
+  const lateralG = telemetry ? telemetry.AccelerationX / 9.81 : undefined;
+  const longitudinalG = telemetry ? telemetry.AccelerationZ / 9.81 : undefined;
+
+  return (
+    <div className="grid gap-[18px]">
+      <TelemetryGroup title="Tires and suspension" icon={<Gauge size={18} />}>
+        <ChassisVisual telemetry={telemetry} />
+        <InlineMetricStrip
+          items={[
+            { label: "Slip angle F/R", value: `${formatValue(frontSlipAngle, { precision: 3 })} / ${formatValue(rearSlipAngle, { precision: 3 })}` },
+            { label: "Combined F/R", value: `${formatValue(frontCombinedSlip, { precision: 3 })} / ${formatValue(rearCombinedSlip, { precision: 3 })}`, tone: slipAmountTone(Math.max(frontCombinedSlip ?? 0, rearCombinedSlip ?? 0)) },
+            { label: "Temp", value: `${temperatureSplitLabel(tireTempDelta)} ${formatValue(tireTempDelta, { precision: 0 })}°`, tone: tireTempDelta === undefined ? "default" : temperatureTone(tireTempDelta) }
+          ]}
+        />
+      </TelemetryGroup>
+
+      <TelemetryGroup title="Load and motion" icon={<Activity size={18} />}>
+        <MotionVisual telemetry={telemetry} />
+        <dl className="grid grid-cols-2 gap-2.5 xl:grid-cols-4">
+          <MetricCell label="Lateral G" value={lateralG} precision={2} />
+          <MetricCell label="Longitudinal G" value={longitudinalG} precision={2} />
+        </dl>
+      </TelemetryGroup>
+
+      <TelemetryGroup title="Powertrain" icon={<Gauge size={18} />}>
+        <PowertrainVisual telemetry={telemetry} />
+        <dl className="grid grid-cols-2 gap-2.5 xl:grid-cols-4">
+          <MetricCell label="Drivetrain" value={drivetrainLabel(telemetry?.DrivetrainType)} />
+          <MetricCell label="Engine max" value={telemetry?.EngineMaxRpm} precision={0} />
+        </dl>
+      </TelemetryGroup>
+    </div>
+  );
+}
+
+function ChassisVisual({ telemetry }: { telemetry: Telemetry | null }) {
+  const tires = buildTireMfdData(telemetry);
+  const corners = [
+    { id: "front-left", label: "FL", side: "left" as const, travel: telemetry?.NormalizedSuspensionTravelFrontLeft },
+    { id: "front-right", label: "FR", side: "right" as const, travel: telemetry?.NormalizedSuspensionTravelFrontRight },
+    { id: "rear-left", label: "RL", side: "left" as const, travel: telemetry?.NormalizedSuspensionTravelRearLeft },
+    { id: "rear-right", label: "RR", side: "right" as const, travel: telemetry?.NormalizedSuspensionTravelRearRight }
+  ];
   const frontTravel = telemetry ? average([
     telemetry.NormalizedSuspensionTravelFrontLeft,
     telemetry.NormalizedSuspensionTravelFrontRight
@@ -2382,79 +2551,275 @@ function CarDataPanel({ telemetry }: { telemetry: Telemetry | null }) {
     telemetry.NormalizedSuspensionTravelRearLeft,
     telemetry.NormalizedSuspensionTravelRearRight
   ) : undefined;
-  const frontCombinedSlip = telemetry ? average([
-    Math.abs(telemetry.TireCombinedSlipFrontLeft),
-    Math.abs(telemetry.TireCombinedSlipFrontRight)
-  ]) : undefined;
-  const rearCombinedSlip = telemetry ? average([
-    Math.abs(telemetry.TireCombinedSlipRearLeft),
-    Math.abs(telemetry.TireCombinedSlipRearRight)
-  ]) : undefined;
-  const frontSlipAngle = telemetry ? frontTireSlipAngle(telemetry) : undefined;
-  const rearSlipAngle = telemetry ? rearTireSlipAngle(telemetry) : undefined;
-  const tireTempDelta = telemetry ? telemetry.frontTemp - telemetry.rearTemp : undefined;
-  const lateralG = telemetry ? telemetry.AccelerationX / 9.81 : undefined;
-  const longitudinalG = telemetry ? telemetry.AccelerationZ / 9.81 : undefined;
-  const yawRateDeg = telemetry ? radiansToDegrees(telemetry.AngularVelocityY) : undefined;
 
   return (
-    <div className="grid gap-[18px]">
-      <TelemetryGroup title="Tires" icon={<Gauge size={18} />}>
-        <dl className="grid grid-cols-2 gap-2.5 xl:grid-cols-4">
-          <MetricCell label="FL temp" value={telemetry?.TireTempFrontLeft} suffix="°" precision={0} />
-          <MetricCell label="FR temp" value={telemetry?.TireTempFrontRight} suffix="°" precision={0} />
-          <MetricCell label="RL temp" value={telemetry?.TireTempRearLeft} suffix="°" precision={0} />
-          <MetricCell label="RR temp" value={telemetry?.TireTempRearRight} suffix="°" precision={0} />
-          <MetricCell label="Front slip angle" value={frontSlipAngle} precision={3} />
-          <MetricCell label="Rear slip angle" value={rearSlipAngle} precision={3} />
-          <MetricCell label="Front combined" value={frontCombinedSlip} precision={3} tone={slipAmountTone(frontCombinedSlip)} />
-          <MetricCell label="Rear combined" value={rearCombinedSlip} precision={3} tone={slipAmountTone(rearCombinedSlip)} />
-          <MetricCell label="Temp split" value={temperatureSplitLabel(tireTempDelta)} tone={tireTempDelta === undefined ? "default" : temperatureTone(tireTempDelta)} />
-          <MetricCell label="Front avg temp" value={telemetry?.frontTemp} suffix="°" precision={0} />
-          <MetricCell label="Rear avg temp" value={telemetry?.rearTemp} suffix="°" precision={0} />
-          <MetricCell label="Temp delta" value={tireTempDelta} suffix="°" precision={0} tone={tireTempDelta === undefined ? "default" : temperatureTone(tireTempDelta)} />
-        </dl>
-      </TelemetryGroup>
-
-      <TelemetryGroup title="Suspension" icon={<Activity size={18} />}>
-        <dl className="grid grid-cols-2 gap-2.5 xl:grid-cols-4">
-          <MetricCell label="FL travel" value={telemetry?.NormalizedSuspensionTravelFrontLeft} precision={3} tone={compressionTone(telemetry?.NormalizedSuspensionTravelFrontLeft)} />
-          <MetricCell label="FR travel" value={telemetry?.NormalizedSuspensionTravelFrontRight} precision={3} tone={compressionTone(telemetry?.NormalizedSuspensionTravelFrontRight)} />
-          <MetricCell label="RL travel" value={telemetry?.NormalizedSuspensionTravelRearLeft} precision={3} tone={compressionTone(telemetry?.NormalizedSuspensionTravelRearLeft)} />
-          <MetricCell label="RR travel" value={telemetry?.NormalizedSuspensionTravelRearRight} precision={3} tone={compressionTone(telemetry?.NormalizedSuspensionTravelRearRight)} />
-          <MetricCell label="Front avg" value={frontTravel} precision={3} tone={compressionTone(frontTravel)} />
-          <MetricCell label="Rear avg" value={rearTravel} precision={3} tone={compressionTone(rearTravel)} />
-          <MetricCell label="Max compression" value={maxCompression} precision={3} tone={compressionTone(maxCompression)} />
-          <MetricCell label="Travel split" value={frontTravel !== undefined && rearTravel !== undefined ? frontTravel - rearTravel : undefined} precision={3} />
-        </dl>
-      </TelemetryGroup>
-
-      <TelemetryGroup title="Load and motion" icon={<Activity size={18} />}>
-        <dl className="grid grid-cols-2 gap-2.5 xl:grid-cols-4">
-          <MetricCell label="Speed" value={telemetry?.speedKmh} suffix=" km/h" precision={0} />
-          <MetricCell label="Lateral G" value={lateralG} precision={2} />
-          <MetricCell label="Longitudinal G" value={longitudinalG} precision={2} />
-          <MetricCell label="Yaw rate" value={yawRateDeg} suffix="°/s" precision={0} />
-          <MetricCell label="Pitch" value={telemetry ? radiansToDegrees(telemetry.Pitch) : undefined} suffix="°" precision={1} />
-          <MetricCell label="Roll" value={telemetry ? radiansToDegrees(telemetry.Roll) : undefined} suffix="°" precision={1} />
-          <MetricCell label="Steer" value={telemetry?.steerPct} suffix="%" precision={0} />
-        </dl>
-      </TelemetryGroup>
-
-      <TelemetryGroup title="Powertrain and inputs" icon={<Gauge size={18} />}>
-        <dl className="grid grid-cols-2 gap-2.5 xl:grid-cols-4">
-          <MetricCell label="Gear" value={formatGear(telemetry?.Gear)} />
-          <MetricCell label="Drivetrain" value={drivetrainLabel(telemetry?.DrivetrainType)} />
-          <MetricCell label="Throttle" value={telemetry?.throttlePct} suffix="%" precision={0} />
-          <MetricCell label="Brake" value={telemetry?.brakePct} suffix="%" precision={0} />
-          <MetricCell label="RPM" value={telemetry?.CurrentEngineRpm} precision={0} />
-          <MetricCell label="Power" value={telemetry?.powerHp} suffix=" hp" precision={0} />
-          <MetricCell label="Torque" value={telemetry?.torqueNm} suffix=" Nm" precision={0} />
-          <MetricCell label="Boost" value={telemetry?.Boost} suffix=" psi" precision={1} />
-        </dl>
-      </TelemetryGroup>
+    <div className="grid gap-2 rounded-lg border border-white/10 p-2.5">
+      <div className="grid grid-cols-2 gap-2">
+        {corners.map((corner) => {
+          const tire = tires.find((candidate) => candidate.id === corner.id);
+          return (
+            <ChassisCorner
+              key={corner.id}
+              label={corner.label}
+              side={corner.side}
+              tire={tire}
+              travel={corner.travel}
+            />
+          );
+        })}
+      </div>
+      <InlineMetricStrip
+        items={[
+          { label: "Susp avg F/R", value: `${formatValue(frontTravel, { precision: 3 })} / ${formatValue(rearTravel, { precision: 3 })}`, tone: compressionTone(Math.max(frontTravel ?? 0, rearTravel ?? 0)) },
+          { label: "Max comp", value: formatValue(maxCompression, { precision: 3 }), tone: compressionTone(maxCompression) },
+          { label: "Split", value: formatValue(frontTravel !== undefined && rearTravel !== undefined ? frontTravel - rearTravel : undefined, { precision: 3 }) }
+        ]}
+      />
     </div>
   );
+}
+
+function ChassisCorner({
+  label,
+  side,
+  tire,
+  travel
+}: {
+  label: string;
+  side: "left" | "right";
+  tire: TireMfdTire | undefined;
+  travel: number | undefined;
+}) {
+  const compression = clampNumber(travel ?? 0, 0, 1);
+  const tone = compressionTone(travel);
+  const springColor = tone === "alert" ? "#e46645" : tone === "warn" ? "#f3d09b" : "#63da97";
+  const tireColor = tireTemperatureColor(tire?.temp ?? 0);
+  const tireSlip = tire?.combinedSlip ?? 0;
+  const tireReadout = (
+    <CornerStackReadout
+      lines={[
+        { value: `${formatValue(tire?.temp, { precision: 0 })}°C`, className: tireTextColorClass(tire?.temp ?? 0) },
+        { value: `${Math.round(clampNumber(tireSlip, 0, 1.5) * 100)}%`, className: metricToneClass(slipAmountTone(tireSlip)) }
+      ]}
+    />
+  );
+  const suspensionReadout = (
+    <CornerStackReadout
+      lines={[
+        { value: `${Math.round(compression * 100)}%`, className: metricToneClass(tone) }
+      ]}
+    />
+  );
+
+  return (
+    <div
+      className={[
+        "grid w-full max-w-[270px] min-w-0 grid-cols-[minmax(46px,1fr)_42px_42px_minmax(46px,1fr)] items-center gap-1.5 p-1.5",
+        side === "left" ? "justify-self-end" : "justify-self-start"
+      ].join(" ")}
+    >
+      {side === "left" ? (
+        <>
+          {tireReadout}
+          <TireGlyph label={label} tire={tire} />
+          <SpringGlyph compression={compression} color={springColor} label={label} />
+          {suspensionReadout}
+        </>
+      ) : (
+        <>
+          {suspensionReadout}
+          <SpringGlyph compression={compression} color={springColor} label={label} />
+          <TireGlyph label={label} tire={tire} />
+          {tireReadout}
+        </>
+      )}
+    </div>
+  );
+}
+
+function TireGlyph({ label, tire }: { label: string; tire: TireMfdTire | undefined }) {
+  const slip = tire ? clampNumber(Math.abs(tire.combinedSlip), 0, 1.2) : 0;
+  const slipHeight = clampNumber(slip / 1.2, 0.12, 1) * 54;
+
+  return (
+    <svg className="h-[64px] w-[42px]" viewBox="0 0 54 82" role="img" aria-label={`${label} tire`}>
+      <rect className="stroke-[#101312] [stroke-width:2]" x="11" y="9" width="32" height="64" rx="7" fill={tireTemperatureColor(tire?.temp ?? 0)} />
+      <rect x="11" y={73 - slipHeight} width="32" height={slipHeight} rx="6" fill="rgba(0,0,0,0.32)" />
+      <path className="fill-none stroke-white/25 [stroke-linecap:round] [stroke-width:1.4]" d="M20 18 V64 M27 18 V64 M34 18 V64" />
+      <text className="fill-[#101312] text-[12px] font-black [paint-order:stroke] [stroke:white] [stroke-width:3px]" x="27" y="45" textAnchor="middle">{label}</text>
+    </svg>
+  );
+}
+
+function SpringGlyph({ compression, color, label }: { compression: number; color: string; label: string }) {
+  const centerX = 27;
+  const topY = 13 + compression * 31;
+  const bottomY = 70;
+  const springHeight = bottomY - topY;
+
+  return (
+    <svg className="h-[64px] w-[42px]" viewBox="0 0 54 82" role="img" aria-label={`${label} suspension`}>
+      <path className="fill-none stroke-white/10 [stroke-width:7]" d={`M${centerX} 8 V74`} />
+      <path className="fill-none stroke-white/20 [stroke-linecap:round] [stroke-width:2.5]" d={`M14 10 H40 M12 ${bottomY + 5} H42`} />
+      <path className="fill-none [stroke-linecap:round] [stroke-linejoin:round] [stroke-width:3.2]" d={springPath(centerX, topY + 4, springHeight - 8)} stroke={color} />
+      <rect className="fill-[#101312] stroke-white/15 [stroke-width:1.4]" x="13" y={topY - 7} width="28" height="9" rx="3" />
+      <rect className="fill-white/10 stroke-white/20 [stroke-width:1]" x="9" y={bottomY} width="36" height="8" rx="3" />
+    </svg>
+  );
+}
+
+function MotionVisual({ telemetry }: { telemetry: Telemetry | null }) {
+  const lateralG = clampNumber((telemetry?.AccelerationX ?? 0) / 9.81, -1.4, 1.4);
+  const longitudinalG = clampNumber((telemetry?.AccelerationZ ?? 0) / 9.81, -1.4, 1.4);
+  const rollDeg = clampNumber(telemetry ? radiansToDegrees(telemetry.Roll) : 0, -18, 18);
+  const pitchDeg = clampNumber(telemetry ? radiansToDegrees(telemetry.Pitch) : 0, -18, 18);
+  const dotX = 110 + (lateralG / 1.4) * 72;
+  const dotY = 110 - (longitudinalG / 1.4) * 72;
+
+  return (
+    <div className="grid gap-4 rounded-lg border border-white/10 bg-[#070a09]/45 p-4 xl:grid-cols-[220px_minmax(0,1fr)]">
+      <svg className="h-[220px] w-full" viewBox="0 0 220 220" role="img" aria-label="Load and motion model">
+        <circle className="fill-[#101312] stroke-white/10 [stroke-width:1.5]" cx="110" cy="110" r="86" />
+        <circle className="fill-none stroke-white/10 [stroke-width:1]" cx="110" cy="110" r="46" />
+        <path className="fill-none stroke-white/15 [stroke-width:1]" d="M24 110 H196 M110 24 V196" />
+        <g transform={`translate(110 110) rotate(${rollDeg})`}>
+          <rect className="fill-[#17201d] stroke-[#f3d09b]/75 [stroke-width:2]" x="-34" y="-17" width="68" height="34" rx="6" />
+          <path className="fill-[#f3d09b]" d="M0 -31 L8 -17 H-8 Z" />
+        </g>
+        <circle className="fill-[#63da97] stroke-[#101312] [stroke-width:3]" cx={dotX} cy={dotY} r="8" />
+      </svg>
+      <div className="grid content-center gap-3">
+        <TiltMeter label="Roll" value={rollDeg} max={18} />
+        <TiltMeter label="Pitch" value={pitchDeg} max={18} />
+        <TiltMeter label="Yaw rate" value={clampNumber(telemetry ? radiansToDegrees(telemetry.AngularVelocityY) : 0, -120, 120)} max={120} suffix="°/s" />
+      </div>
+    </div>
+  );
+}
+
+function PowertrainVisual({ telemetry }: { telemetry: Telemetry | null }) {
+  const rpm = telemetry?.CurrentEngineRpm ?? 0;
+  const maxRpm = Math.max(telemetry?.EngineMaxRpm ?? 0, telemetry?.EngineIdleRpm ?? 0, 1);
+  const rpmRatio = clampNumber(rpm / maxRpm, 0, 1);
+  const powerRatio = clampNumber((telemetry?.powerHp ?? 0) / 1200, 0, 1);
+  const torqueRatio = clampNumber((telemetry?.torqueNm ?? 0) / 1500, 0, 1);
+  const boostRatio = clampNumber((telemetry?.Boost ?? 0) / 30, 0, 1);
+
+  return (
+    <div className="grid gap-4 rounded-lg border border-white/10 bg-[#070a09]/45 p-4 xl:grid-cols-[180px_minmax(0,1fr)]">
+      <RadialGauge label="RPM" value={rpmRatio} display={formatValue(rpm, { precision: 0 })} />
+      <div className="grid content-center gap-3">
+        <VisualBar label="Power" value={powerRatio} display={`${formatValue(telemetry?.powerHp, { precision: 0 })} hp`} color="#63da97" />
+        <VisualBar label="Torque" value={torqueRatio} display={`${formatValue(telemetry?.torqueNm, { precision: 0 })} Nm`} color="#f3d09b" />
+        <VisualBar label="Boost" value={boostRatio} display={`${formatValue(telemetry?.Boost, { precision: 1 })} psi`} color="#59a7ff" />
+      </div>
+    </div>
+  );
+}
+
+function CornerStackReadout({
+  lines
+}: {
+  lines: { value: string; className: string }[];
+}) {
+  return (
+    <div className="grid min-w-0 content-center gap-0.5">
+      {lines.map((line, index) => (
+        <span key={`${line.value}-${index}`} className={`block truncate text-[13px] font-black leading-tight tabular-nums ${line.className}`}>
+          {line.value}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function InlineMetricStrip({
+  items
+}: {
+  items: { label: string; value: string; tone?: "default" | "ok" | "warn" | "alert" }[];
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-white/10 pt-2 text-xs">
+      {items.map((item) => (
+        <span key={item.label} className="flex min-w-0 items-baseline gap-1.5">
+          <span className="shrink-0 font-semibold text-[#9ba6a1]">{item.label}</span>
+          <span className={`truncate font-black tabular-nums ${metricToneClass(item.tone ?? "default")}`}>{item.value}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function TiltMeter({ label, value, max, suffix = "°" }: { label: string; value: number; max: number; suffix?: string }) {
+  const marker = 50 + (clampNumber(value, -max, max) / max) * 50;
+
+  return (
+    <div className="grid gap-2">
+      <div className="flex items-center justify-between gap-3">
+        <span className={labelClass}>{label}</span>
+        <span className="text-sm font-bold tabular-nums text-[#f5f7f6]">{formatValue(value, { precision: suffix === "°/s" ? 0 : 1 })}{suffix}</span>
+      </div>
+      <div className="relative h-3 rounded-full border border-white/10 bg-[#101312]">
+        <div className="absolute left-1/2 top-0 h-full w-px bg-white/25" />
+        <div className="absolute top-1/2 h-5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#f3d09b]" style={{ left: `${marker}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function RadialGauge({ label, value, display }: { label: string; value: number; display: string }) {
+  const radius = 58;
+  const circumference = 2 * Math.PI * radius;
+  const progress = clampNumber(value, 0, 1);
+
+  return (
+    <div className="grid place-items-center">
+      <svg className="h-[168px] w-[168px]" viewBox="0 0 168 168" role="img" aria-label={`${label} gauge`}>
+        <circle className="fill-[#101312] stroke-white/10 [stroke-width:1.5]" cx="84" cy="84" r="76" />
+        <circle className="fill-none stroke-white/10 [stroke-width:12]" cx="84" cy="84" r={radius} />
+        <circle
+          className="fill-none stroke-[#f3d09b] [stroke-linecap:round] [stroke-width:12]"
+          cx="84"
+          cy="84"
+          r={radius}
+          strokeDasharray={`${circumference * progress} ${circumference}`}
+          transform="rotate(-90 84 84)"
+        />
+        <text className="fill-[#9ba6a1] text-[11px] font-bold" x="84" y="76" textAnchor="middle">{label}</text>
+        <text className="fill-[#f5f7f6] text-[24px] font-black tabular-nums" x="84" y="101" textAnchor="middle">{display}</text>
+      </svg>
+    </div>
+  );
+}
+
+function VisualBar({ label, value, display, color }: { label: string; value: number; display: string; color: string }) {
+  return (
+    <div className="grid gap-2">
+      <div className="flex items-center justify-between gap-3">
+        <span className={labelClass}>{label}</span>
+        <span className="text-sm font-bold tabular-nums text-[#f5f7f6]">{display}</span>
+      </div>
+      <div className="h-3 overflow-hidden rounded-full border border-white/10 bg-[#101312]">
+        <div className="h-full rounded-full transition-[width] duration-100" style={{ width: `${clampNumber(value, 0, 1) * 100}%`, backgroundColor: color }} />
+      </div>
+    </div>
+  );
+}
+
+function springPath(centerX: number, topY: number, height: number) {
+  const turns = 5.5;
+  const amplitude = 9.5;
+  const samples = 44;
+  const points: string[] = [];
+
+  for (let index = 0; index <= samples; index += 1) {
+    const progress = index / samples;
+    const x = centerX + Math.sin(progress * turns * Math.PI * 2) * amplitude;
+    const y = topY + progress * height;
+    points.push(`${x.toFixed(1)} ${y.toFixed(1)}`);
+  }
+
+  return `M ${points.join(" L ")}`;
 }
 
 type TireMfdTire = {
@@ -2536,6 +2901,14 @@ function tireTemperatureColor(temp: number) {
   return "#e46645";
 }
 
+function tireTextColorClass(temp: number) {
+  if (!Number.isFinite(temp) || temp <= 0) return "text-[#f5f7f6]";
+  if (temp < 55) return "text-[#59a7ff]";
+  if (temp < 82) return "text-[#63da97]";
+  if (temp < 102) return "text-[#f3d09b]";
+  return "text-[#e46645]";
+}
+
 function MetricCell({
   label,
   value,
@@ -2549,12 +2922,7 @@ function MetricCell({
   precision?: number;
   tone?: "default" | "ok" | "warn" | "alert";
 }) {
-  const toneClass = {
-    default: "text-[#f5f7f6]",
-    ok: "text-[#63da97]",
-    warn: "text-[#f3d09b]",
-    alert: "text-[#e46645]"
-  }[tone];
+  const toneClass = metricToneClass(tone);
 
   return (
     <div className="min-w-0 rounded-lg border border-white/10 bg-white/[0.035] p-3">
@@ -2564,6 +2932,15 @@ function MetricCell({
       </dd>
     </div>
   );
+}
+
+function metricToneClass(tone: "default" | "ok" | "warn" | "alert") {
+  return {
+    default: "text-[#f5f7f6]",
+    ok: "text-[#63da97]",
+    warn: "text-[#f3d09b]",
+    alert: "text-[#e46645]"
+  }[tone];
 }
 
 function TelemetryDashboard({
