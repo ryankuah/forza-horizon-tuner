@@ -2214,6 +2214,7 @@ type TireMfdTire = {
   temp: number;
   slipAngle: number;
   combinedSlip: number;
+  steerAngleDeg: number;
   left: string;
   top: string;
 };
@@ -2229,8 +2230,11 @@ function TireMfdBlock({ tire }: { tire: TireMfdTire }) {
       style={{ left: tire.left, top: tire.top }}
     >
       <div
-        className="relative flex h-full flex-col justify-between overflow-hidden rounded-[4px] border border-black/30 px-1.5 py-1 text-[#07100d]"
-        style={{ backgroundColor: tempColor }}
+        className="relative flex h-full flex-col justify-between overflow-hidden rounded-[4px] border border-black/30 px-1.5 py-1 text-[#07100d] transition-transform duration-150 ease-out"
+        style={{
+          backgroundColor: tempColor,
+          transform: `rotate(${tire.steerAngleDeg}deg)`
+        }}
       >
         <div
           className="absolute inset-x-0 bottom-0 bg-black/30 transition-[height] duration-200"
@@ -2249,6 +2253,8 @@ function TireMfdBlock({ tire }: { tire: TireMfdTire }) {
 }
 
 function buildTireMfdData(telemetry: Telemetry | null): TireMfdTire[] {
+  const frontSteerAngle = approximateFrontTireSteerDegrees(telemetry?.steerPct ?? 0);
+
   return [
     {
       id: "front-left",
@@ -2256,6 +2262,7 @@ function buildTireMfdData(telemetry: Telemetry | null): TireMfdTire[] {
       temp: telemetry?.TireTempFrontLeft ?? 0,
       slipAngle: Math.abs(telemetry?.TireSlipAngleFrontLeft ?? 0),
       combinedSlip: Math.abs(telemetry?.TireCombinedSlipFrontLeft ?? 0),
+      steerAngleDeg: frontSteerAngle,
       left: "28%",
       top: "24%"
     },
@@ -2265,6 +2272,7 @@ function buildTireMfdData(telemetry: Telemetry | null): TireMfdTire[] {
       temp: telemetry?.TireTempFrontRight ?? 0,
       slipAngle: Math.abs(telemetry?.TireSlipAngleFrontRight ?? 0),
       combinedSlip: Math.abs(telemetry?.TireCombinedSlipFrontRight ?? 0),
+      steerAngleDeg: frontSteerAngle,
       left: "72%",
       top: "24%"
     },
@@ -2274,6 +2282,7 @@ function buildTireMfdData(telemetry: Telemetry | null): TireMfdTire[] {
       temp: telemetry?.TireTempRearLeft ?? 0,
       slipAngle: Math.abs(telemetry?.TireSlipAngleRearLeft ?? 0),
       combinedSlip: Math.abs(telemetry?.TireCombinedSlipRearLeft ?? 0),
+      steerAngleDeg: 0,
       left: "28%",
       top: "76%"
     },
@@ -2283,10 +2292,15 @@ function buildTireMfdData(telemetry: Telemetry | null): TireMfdTire[] {
       temp: telemetry?.TireTempRearRight ?? 0,
       slipAngle: Math.abs(telemetry?.TireSlipAngleRearRight ?? 0),
       combinedSlip: Math.abs(telemetry?.TireCombinedSlipRearRight ?? 0),
+      steerAngleDeg: 0,
       left: "72%",
       top: "76%"
     }
   ];
+}
+
+function approximateFrontTireSteerDegrees(steerPct: number) {
+  return clampNumber(steerPct, -100, 100) * 0.28;
 }
 
 function bodyAngleToTravelDegrees(telemetry: Telemetry) {
