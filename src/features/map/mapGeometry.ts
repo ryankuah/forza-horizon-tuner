@@ -21,17 +21,12 @@ export const DEFAULT_MAP_CALIBRATION: CalibrationTransform = {
 };
 
 export function clientPointToSvgPoint(svg: SVGSVGElement, event: { clientX: number; clientY: number }): SvgPoint | null {
-  return clientCoordinatesToSvgPoint(svg, event.clientX, event.clientY);
-}
-
-
-export function clientCoordinatesToSvgPoint(svg: SVGSVGElement, clientX: number, clientY: number): SvgPoint | null {
   const matrix = svg.getScreenCTM();
   if (!matrix) return null;
 
   const point = svg.createSVGPoint();
-  point.x = clientX;
-  point.y = clientY;
+  point.x = event.clientX;
+  point.y = event.clientY;
   const transformed = point.matrixTransform(matrix.inverse());
   return { x: transformed.x, y: transformed.y };
 }
@@ -111,7 +106,8 @@ export function buildPathGeometry(path: PathSample[]) {
     return { width, height, points: [] as SvgPoint[], polyline: "" };
   }
 
-  const points = path.map(worldPointToMapPoint);
+  const transform = activeMapCalibration();
+  const points = path.map((point) => worldCoordinatesToMapPoint(point.x, point.z, transform));
 
   return {
     width,
@@ -119,11 +115,6 @@ export function buildPathGeometry(path: PathSample[]) {
     points,
     polyline: points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")
   };
-}
-
-
-export function worldPointToMapPoint(point: PathSample): SvgPoint {
-  return worldCoordinatesToMapPoint(point.x, point.z, activeMapCalibration());
 }
 
 
@@ -147,11 +138,6 @@ export function activeMapCalibration() {
 
   cachedMapCalibration = loadSavedMapCalibration();
   return cachedMapCalibration ?? DEFAULT_MAP_CALIBRATION;
-}
-
-
-function resetActiveMapCalibration() {
-  cachedMapCalibration = undefined;
 }
 
 
@@ -201,4 +187,3 @@ export function nearestPointIndex(points: SvgPoint[], cursor: SvgPoint) {
 
   return bestIndex;
 }
-

@@ -1,95 +1,159 @@
 # Forza Horizon Tuner
 
-Local telemetry dashboard and early setup advisor for Forza Horizon 6.
+Forza Horizon Tuner is a local desktop telemetry dashboard and setup advisor for Forza Horizon. It listens for the game's Data Out UDP stream, records driving sessions, and visualizes live and historical telemetry in an Electron app.
 
-Frontend stack: Vite, React, TypeScript, and Tailwind CSS.
+## Features
 
-Desktop stack: Electron, electron-builder, and electron-updater.
+- Live UDP telemetry ingestion from the official 324-byte Forza Horizon Data Out packet.
+- Electron desktop app with a Vite, React, TypeScript, and Tailwind CSS renderer.
+- Local SQLite session storage powered by `better-sqlite3`.
+- Live and saved-session playback with map path scrubbing.
+- Track map projection using `PositionX` and `PositionZ` over the bundled map reveal image.
+- Car, input, tire, suspension, slip, packet, and session telemetry panels.
+- First-pass tuning advice based on slip balance, tire temperature balance, suspension compression, and throttle wheelspin.
+- Built-in simulator for testing without the game running.
+- Desktop packaging with `electron-builder` and GitHub Releases support through `electron-updater`.
 
-## Run
+## Tech Stack
+
+- Electron
+- React 19
+- TypeScript
+- Vite
+- Tailwind CSS
+- SQLite / `better-sqlite3`
+- `electron-builder`
+
+## Requirements
+
+- Node.js and npm
+- Forza Horizon with Data Out support enabled
+- A Mac, Windows, or Linux machine on the same network as the device running the game
+
+## Getting Started
+
+Install dependencies:
 
 ```bash
 npm install
+```
+
+Run the Electron app:
+
+```bash
 npm run dev
 ```
 
-Open the Vite URL shown in the terminal, usually:
+The Electron main process starts the telemetry runtime automatically. The app does not require a browser dev server, WebSocket server, or external API service.
 
-```text
-http://localhost:5173
-```
+## Forza Data Out Setup
 
-## Run The Desktop App
-
-```bash
-npm run dev:electron
-```
-
-Electron starts the local telemetry backend automatically. Session data is stored in the app user-data directory in packaged builds.
-
-To test with simulated telemetry in Electron:
-
-```bash
-npm run simulate:electron
-```
-
-## Steam Deck / Forza Setup
-
-In Forza Horizon 6, open `Settings > HUD and Gameplay`:
+In Forza Horizon, open `Settings > HUD and Gameplay` and configure:
 
 - `Data Out`: `On`
-- `Data Out IP Address`: your Mac LAN IP shown by the server
+- `Data Out IP Address`: the LAN IP address shown in the app
 - `Data Out IP Port`: `9999`
 
-The server listens on UDP port `9999`. Avoid ports `5200` through `5300`; Forza uses that range for its own outgoing socket.
+The app listens on UDP port `9999` by default. Avoid ports `5200` through `5300`; Forza uses that range for its own outgoing socket.
 
-## Test Without The Game
+To use a different port, set `FORZA_UDP_PORT` before starting the app:
 
-Run the backend simulator:
+```bash
+FORZA_UDP_PORT=9998 npm run dev
+```
+
+## Testing Without The Game
+
+Run the app with simulated telemetry:
 
 ```bash
 npm run simulate
 ```
 
-## Checks
+This starts the same Electron app and runtime, but feeds generated telemetry into the dashboard.
+
+## Available Scripts
+
+```bash
+npm run dev
+```
+
+Builds the renderer and Electron main process, rebuilds native Electron dependencies, and starts the desktop app.
+
+```bash
+npm run simulate
+```
+
+Starts the app with simulated telemetry.
 
 ```bash
 npm run typecheck
+```
+
+Runs TypeScript validation without emitting files.
+
+```bash
 npm run build
 ```
 
-## Desktop Builds And Releases
+Builds both the Vite renderer and bundled Electron files.
 
-Build local installers:
+```bash
+npm run pack
+```
+
+Builds an unpacked local Electron app.
 
 ```bash
 npm run dist
 ```
 
-Create a GitHub release by pushing a version tag:
+Builds installable desktop artifacts.
+
+```bash
+npm run release
+```
+
+Builds and publishes release artifacts with `electron-builder`.
+
+## Session Storage
+
+Session data is stored locally in SQLite. In packaged builds, the database is created in the Electron app user-data directory.
+
+The runtime creates a session when race telemetry starts, records valid packets, tracks bad packets, and keeps saved sessions available for playback from the app sidebar.
+
+## Map Alignment
+
+The map image is stored at:
+
+```text
+public/fh6-map-reveal.jpg
+```
+
+The world-to-map projection is defined in:
+
+```text
+src/features/map/mapGeometry.ts
+```
+
+Current default projection:
+
+```text
+mapX = PositionX * 0.13158 + 1160.32838497
+mapY = PositionZ * -0.13158 + 1321.0827332
+```
+
+## Desktop Builds And Releases
+
+Packaging scripts rebuild `better-sqlite3` for the target Electron version before creating artifacts.
+
+To create a tagged release:
 
 ```bash
 npm version patch
 git push origin main --follow-tags
 ```
 
-The release workflow builds macOS, Windows, and Linux artifacts. `electron-updater` checks GitHub Releases when the packaged app starts. GitHub-hosted auto updates require public release artifacts; private repositories need a separate public update feed or hosted update server.
+The release workflow builds macOS, Windows, and Linux artifacts. `electron-updater` checks GitHub Releases when the packaged app starts.
 
-## What It Does Now
-
-- Receives the official 324-byte FH6 Data Out UDP packet.
-- Streams live telemetry to the browser over WebSocket.
-- Shows speed, RPM, controls, tire temperatures, combined slip, and packet status.
-- Shows the live car position and travelled session path from `PositionX` and `PositionZ` over the official FH6 map reveal image.
-- Builds first-pass tuning advice from slip balance, tire temperature balance, suspension compression, and throttle wheelspin.
-
-## Map Alignment
-
-The map base image lives at `public/fh6-map-reveal.jpg`.
-
-The app includes a hard-coded FH6 world-to-map projection in `src/features/map/mapGeometry.ts`. The current default uses a single linked scale with zero cross-axis shear:
-
-```text
-mapX = PositionX * 0.13158 + 1160.32838497
-mapY = PositionZ * -0.13158 + 1321.0827332
-```
+GitHub-hosted auto updates require public release artifacts. Private repositories need a separate public update feed or hosted update server.

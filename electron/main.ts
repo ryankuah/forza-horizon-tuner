@@ -1,19 +1,14 @@
-import { app, BrowserWindow, dialog, ipcMain, shell, utilityProcess, type UtilityProcess } from "electron";
+import { app, BrowserWindow, ipcMain, shell } from "electron";
 import { autoUpdater } from "electron-updater";
+import fs from "node:fs";
 import path from "node:path";
+import { createTelemetryRuntime } from "../server/runtime";
+import type { AppState } from "../src/types/telemetry";
 
-const HTTP_PORT = Number(process.env.HTTP_PORT || 3001);
 const isDev = !app.isPackaged;
 
 let mainWindow: BrowserWindow | null = null;
-let serverProcess: UtilityProcess | null = null;
-let isQuitting = false;
-
-function serverEntryPath() {
-  return app.isPackaged
-    ? path.join(process.resourcesPath, "server", "index.cjs")
-    : path.join(__dirname, "..", "dist-server", "index.cjs");
-}
+let runtime: ReturnType<typeof createTelemetryRuntime> | null = null;
 
 function rendererEntry() {
   if (process.env.VITE_DEV_SERVER_URL) {
@@ -23,44 +18,23 @@ function rendererEntry() {
   return `file://${path.join(__dirname, "..", "dist", "index.html")}`;
 }
 
-function startTelemetryServer() {
-  const dbPath = path.join(app.getPath("userData"), "telemetry.sqlite");
-  serverProcess = utilityProcess.fork(serverEntryPath(), [], {
-    env: {
-      ...process.env,
-      HTTP_PORT: String(HTTP_PORT),
-      WS_PORT: String(process.env.WS_PORT || 8765),
-      FORZA_UDP_PORT: String(process.env.FORZA_UDP_PORT || 9999),
-      TELEMETRY_DB_PATH: dbPath
-    },
-    serviceName: "telemetry-server"
+function startTelemetryRuntime() {
+  runtime = createTelemetryRuntime({
+    dbPath: path.join(app.getPath("userData"), "telemetry.sqlite"),
+    simulate: process.env.SIMULATE === "1"
   });
-
-  serverProcess.stdout?.on("data", (data) => {
-    console.log(`[telemetry-server] ${data.toString().trimEnd()}`);
+  runtime.onState((state) => {
+    mainWindow?.webContents.send("telemetry:state", state);
   });
-  serverProcess.stderr?.on("data", (data) => {
-    console.error(`[telemetry-server] ${data.toString().trimEnd()}`);
-  });
-  serverProcess.once("exit", (code) => {
-    serverProcess = null;
-    if (!isQuitting && code !== 0) {
-      dialog.showErrorBox("Telemetry server stopped", `The local telemetry server exited with code ${code}.`);
-    }
-  });
+  runtime.start();
+  runtime.logStartup();
 }
 
-async function waitForTelemetryServer(timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`http://localhost:${HTTP_PORT}/api/status`);
-      if (response.ok) return;
-    } catch {
-      // Server is still booting.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150));
-  }
+function setupTelemetryIpc() {
+  ipcMain.handle("telemetry:snapshot", () => runtime?.snapshot());
+  ipcMain.handle("telemetry:sessions", () => runtime?.listSessions().sessions ?? []);
+  ipcMain.handle("telemetry:session-detail", (_event, sessionId: string) => runtime?.getSessionDetail(sessionId) ?? null);
+  ipcMain.handle("telemetry:new-session", () => Boolean(runtime?.createNewSession().currentSessionId));
 }
 
 async function createMainWindow() {
@@ -70,7 +44,9 @@ async function createMainWindow() {
     minWidth: 1100,
     minHeight: 720,
     backgroundColor: "#09090b",
-    title: "Forza Horizon Tuner",
+    title: "",
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 16, y: 18 },
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -82,8 +58,17 @@ async function createMainWindow() {
     shell.openExternal(url);
     return { action: "deny" };
   });
+  mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    console.log(`[renderer:${level}] ${message} (${sourceId}:${line})`);
+  });
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    console.error(`Renderer process exited: ${details.reason}`);
+  });
 
-  await waitForTelemetryServer();
+  mainWindow.webContents.once("did-finish-load", () => {
+    mainWindow?.webContents.send("telemetry:state", runtime?.snapshot() satisfies AppState | undefined);
+  });
+
   await mainWindow.loadURL(rendererEntry());
 
   if (isDev) {
@@ -106,19 +91,28 @@ function setupAutoUpdates() {
   });
 
   ipcMain.handle("app:check-for-updates", async () => {
-    if (!app.isPackaged) return { skipped: true };
-    const result = await autoUpdater.checkForUpdatesAndNotify();
-    return { updateInfo: result?.updateInfo ?? null };
+    if (!canCheckForUpdates()) return { skipped: true };
+    try {
+      const result = await autoUpdater.checkForUpdatesAndNotify();
+      return { updateInfo: result?.updateInfo ?? null };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
   });
+}
+
+function canCheckForUpdates() {
+  return app.isPackaged && fs.existsSync(path.join(process.resourcesPath, "app-update.yml"));
 }
 
 app.whenReady().then(async () => {
   setupAutoUpdates();
-  startTelemetryServer();
+  setupTelemetryIpc();
+  startTelemetryRuntime();
   await createMainWindow();
 
-  if (app.isPackaged) {
-    void autoUpdater.checkForUpdatesAndNotify();
+  if (canCheckForUpdates()) {
+    void autoUpdater.checkForUpdatesAndNotify().catch(() => undefined);
   }
 
   app.on("activate", () => {
@@ -129,8 +123,7 @@ app.whenReady().then(async () => {
 });
 
 app.on("before-quit", () => {
-  isQuitting = true;
-  serverProcess?.kill();
+  runtime?.stop();
 });
 
 app.on("window-all-closed", () => {

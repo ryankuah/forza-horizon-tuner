@@ -2,6 +2,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*.*.*"
   workflow_dispatch:
@@ -10,13 +12,83 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: Build ${{ matrix.os }}
+  metadata:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      name: ${{ steps.release.outputs.name }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve release metadata
+        id: release
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          short_sha="${GITHUB_SHA::7}"
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+            name="Forza Horizon Tuner ${tag}"
+            prerelease="false"
+          else
+            tag="v${version}-build.${GITHUB_RUN_NUMBER}.${short_sha}"
+            name="Forza Horizon Tuner ${tag}"
+            prerelease="true"
+          fi
+
+          {
+            echo "tag=${tag}"
+            echo "name=${name}"
+            echo "prerelease=${prerelease}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_NAME: ${{ steps.release.outputs.name }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
+        shell: bash
+        run: |
+          args=(
+            "${RELEASE_TAG}"
+            --target "${GITHUB_SHA}"
+            --title "${RELEASE_NAME}"
+            --notes "Automated build from ${GITHUB_SHA}."
+          )
+
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            args+=(--prerelease)
+          else
+            args+=(--latest)
+          fi
+
+          gh release create "${args[@]}"
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: metadata
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        include:
+          - name: macOS
+            os: macos-latest
+            target: --mac
+            artifact_globs: "release/*.dmg release/*.zip release/*.yml release/*.blockmap"
+          - name: Windows
+            os: windows-latest
+            target: --win
+            artifact_globs: "release/*.exe release/*.yml release/*.blockmap"
+          - name: Linux
+            os: ubuntu-latest
+            target: --linux
+            artifact_globs: "release/*.AppImage release/*.deb release/*.yml release/*.blockmap"
 
     steps:
       - name: Checkout
@@ -34,7 +106,30 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Build and publish release artifacts
-        run: npm run release
+      - name: Build desktop artifacts
+        run: npm run dist:ci -- ${{ matrix.target }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload artifacts to GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+          ARTIFACT_GLOBS: ${{ matrix.artifact_globs }}
+        shell: bash
+        run: |
+          files=()
+          for pattern in ${ARTIFACT_GLOBS}; do
+            for file in ${pattern}; do
+              if [[ -f "${file}" ]]; then
+                files+=("${file}")
+              fi
+            done
+          done
+
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "No release artifacts found in release/."
+            exit 1
+          fi
+
+          gh release upload "${RELEASE_TAG}" "${files[@]}" --clobber

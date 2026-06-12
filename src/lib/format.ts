@@ -1,4 +1,4 @@
-import type { Advice, SessionSummary, TelemetryValue } from "@/types/telemetry";
+import type { Advice, TelemetryValue } from "@/types/telemetry";
 
 export function formatSignedPercent(value: number) {
   const rounded = Math.round(value);
@@ -19,14 +19,6 @@ export function drivetrainLabel(value: number | undefined) {
   if (value === 1) return "RWD";
   if (value === 2) return "AWD";
   return "Unknown";
-}
-
-
-export function formatSessionLabel(session: SessionSummary) {
-  const started = new Date(session.startedAt).toLocaleString();
-  const packets = `${session.packetCount.toLocaleString()} packets`;
-  const car = session.carPerformanceIndex ? ` PI ${session.carPerformanceIndex}` : "";
-  return `${started} - ${packets}${car} - ${shortSessionId(session.id)}`;
 }
 
 
@@ -83,4 +75,3 @@ export function formatValue(value: number | string | null | undefined, options: 
   if (Number.isNaN(value)) return "0";
   return Number(value).toFixed(options.precision ?? 0);
 }
-

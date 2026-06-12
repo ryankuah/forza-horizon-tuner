@@ -139,8 +139,6 @@ export type AppState = {
   telemetry: Telemetry | null;
   summary: Summary | null;
   udpPort: number;
-  httpPort: number;
-  wsPort: number;
   sessionId?: string;
 };
 
@@ -251,7 +249,5 @@ export const emptyState: AppState = {
   advice: [],
   telemetry: null,
   summary: null,
-  udpPort: 9999,
-  httpPort: 3001,
-  wsPort: 8765
+  udpPort: 9999
 };

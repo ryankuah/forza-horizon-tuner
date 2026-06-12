@@ -1,5 +1,5 @@
 import * as React from "react";
-import { createNewSession, fetchSessionDetail, fetchSessions, streamSessionDetail } from "@/services/api";
+import { createNewSession, fetchSessionDetail, fetchSessions } from "@/services/api";
 import type { SessionDetail, SessionSelection, SessionSummary } from "@/types/telemetry";
 
 export function useSessions() {
@@ -30,41 +30,24 @@ export function useSessions() {
       return;
     }
 
-    const abortController = new AbortController();
     let cancelled = false;
     setSessionDetail(null);
     setIsSessionStreaming(true);
 
-    streamSessionDetail(selectedSessionId, {
-      signal: abortController.signal,
-      onSession: (session) => {
-        if (!cancelled) setSessionDetail({ session, samples: [], summary: null });
-      },
-      onSamples: (samples) => {
-        if (cancelled) return;
-        setSessionDetail((current) => current
-          ? { ...current, samples: [...current.samples, ...samples] }
-          : null
-        );
-      },
-      onDone: (summary) => {
-        if (cancelled) return;
-        setSessionDetail((current) => current ? { ...current, summary } : current);
-        setIsSessionStreaming(false);
-      }
-    }).catch(async (error) => {
-      if (cancelled || abortController.signal.aborted) return;
-      console.warn(`Session stream failed, falling back to bulk session fetch: ${error instanceof Error ? error.message : String(error)}`);
-      const detail = await fetchSessionDetail(selectedSessionId);
-      if (!cancelled) {
-        setSessionDetail(detail);
-        setIsSessionStreaming(false);
-      }
-    });
+    fetchSessionDetail(selectedSessionId)
+      .then((detail) => {
+        if (!cancelled) setSessionDetail(detail);
+      })
+      .catch((error) => {
+        console.warn(`Session load failed: ${error instanceof Error ? error.message : String(error)}`);
+        if (!cancelled) setSessionDetail(null);
+      })
+      .finally(() => {
+        if (!cancelled) setIsSessionStreaming(false);
+      });
 
     return () => {
       cancelled = true;
-      abortController.abort();
       setIsSessionStreaming(false);
     };
   }, [selectedSessionId]);

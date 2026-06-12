@@ -13,11 +13,7 @@ export function useLiveTelemetry() {
   const sampleIndexRef = React.useRef(0);
 
   React.useEffect(() => {
-    const host = window.location.hostname || "localhost";
-    const socket = new WebSocket(`ws://${host}:8765`);
-
-    socket.addEventListener("message", (event) => {
-      const nextState = JSON.parse(event.data) as AppState;
+    const handleState = (nextState: AppState) => {
       const sessionChanged = liveSessionIdRef.current && liveSessionIdRef.current !== nextState.sessionId;
       liveSessionIdRef.current = nextState.sessionId;
       if (sessionChanged) sampleIndexRef.current = 0;
@@ -32,9 +28,10 @@ export function useLiveTelemetry() {
           : nextSamples;
       });
       if (nextState.telemetry) sampleIndexRef.current += 1;
-    });
+    };
 
-    return () => socket.close();
+    window.telemetryApp.getSnapshot().then(handleState).catch(() => undefined);
+    return window.telemetryApp.onTelemetryState((_event, nextState) => handleState(nextState));
   }, []);
 
   return { state, path, setPath, samples, setSamples };

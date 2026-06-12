@@ -1,8 +1,6 @@
-import * as React from "react";
-import { Car, Check, Clock, History, Menu, Plus, Radio, X } from "lucide-react";
+import { Car, Check, Clock, PanelLeftClose, PanelLeftOpen, Plus, Radio } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { drivetrainLabel, shortSessionId } from "@/lib/format";
 import type { SessionSelection, SessionSummary, Telemetry } from "@/types/telemetry";
@@ -45,6 +43,8 @@ export function SessionHeader({
   livePackets,
   liveBadPackets,
   liveLastPacketAt,
+  isCollapsed,
+  onCollapsedChange,
   onSessionChange,
   onNewSession
 }: {
@@ -56,6 +56,8 @@ export function SessionHeader({
   livePackets?: number;
   liveBadPackets?: number;
   liveLastPacketAt?: number | null;
+  isCollapsed: boolean;
+  onCollapsedChange: (isCollapsed: boolean) => void;
   onSessionChange: (sessionId: SessionSelection) => void;
   onNewSession: () => void | Promise<void>;
 }) {
@@ -64,199 +66,221 @@ export function SessionHeader({
     : selectedSessionId === "live"
       ? sessions[0]?.id ?? "__none"
       : selectedSessionId;
-  const [isOpen, setIsOpen] = React.useState(false);
-
-  React.useEffect(() => {
-    if (!isOpen) return;
-
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") setIsOpen(false);
-    }
-
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [isOpen]);
 
   function selectSession(sessionId: SessionSelection) {
     if (sessionId === "__none") return;
     onSessionChange(sessionId);
-    setIsOpen(false);
-  }
-
-  async function startNewSession() {
-    await onNewSession();
-    setIsOpen(false);
   }
 
   return (
-    <>
-      <Button
-        className="fixed left-4 top-4 z-30 size-10 border-border bg-background/90 shadow-sm backdrop-blur md:left-6 md:top-6"
-        variant="outline"
-        size="icon-lg"
-        type="button"
-        onClick={() => setIsOpen(true)}
-        aria-label="Open sessions"
-        aria-expanded={isOpen}
-      >
-        <Menu size={18} />
-      </Button>
+    <aside
+      className={cn(
+        "flex h-screen shrink-0 flex-col border-r border-white/10 bg-[#242424] text-[#e7e7e7] transition-[width] duration-200 ease-out",
+        isCollapsed ? "w-[68px]" : "w-[292px]"
+      )}
+      aria-label="Sessions"
+    >
+      <div className="flex h-[62px] shrink-0 items-center justify-end px-3 [-webkit-app-region:drag]">
+        <Button
+          className="text-[#b6b6b6] hover:bg-white/10 hover:text-white [-webkit-app-region:no-drag]"
+          variant="ghost"
+          size="icon"
+          type="button"
+          onClick={() => onCollapsedChange(!isCollapsed)}
+          aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          {isCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+        </Button>
+      </div>
 
-      {isOpen ? (
-        <div className="fixed inset-0 z-40" role="presentation">
-          <button
-            className="absolute inset-0 cursor-default bg-background/60 backdrop-blur-[2px]"
-            type="button"
-            aria-label="Close sessions"
-            onClick={() => setIsOpen(false)}
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+        {isCollapsed ? (
+          <CollapsedSessions
+            sessions={sessions}
+            selectedValue={selectedValue}
+            canSelectLive={canSelectLive}
+            onSessionChange={selectSession}
+            onNewSession={onNewSession}
           />
+        ) : (
+          <ExpandedSessions
+            sessions={sessions}
+            selectedValue={selectedValue}
+            canSelectLive={canSelectLive}
+            liveSessionId={liveSessionId}
+            liveTelemetry={liveTelemetry}
+            livePackets={livePackets}
+            liveBadPackets={liveBadPackets}
+            liveLastPacketAt={liveLastPacketAt}
+            onSessionChange={selectSession}
+            onNewSession={onNewSession}
+          />
+        )}
+      </div>
+    </aside>
+  );
+}
 
-          <aside
-            className="absolute left-0 top-0 flex h-full w-full max-w-[390px] flex-col border-r border-border bg-background shadow-xl sm:w-[390px]"
-            aria-label="Sessions"
+function ExpandedSessions({
+  sessions,
+  selectedValue,
+  canSelectLive,
+  liveSessionId,
+  liveTelemetry,
+  livePackets,
+  liveBadPackets,
+  liveLastPacketAt,
+  onSessionChange,
+  onNewSession
+}: {
+  sessions: SessionSummary[];
+  selectedValue: SessionSelection | "__none";
+  canSelectLive: boolean;
+  liveSessionId?: string;
+  liveTelemetry?: Telemetry | null;
+  livePackets?: number;
+  liveBadPackets?: number;
+  liveLastPacketAt?: number | null;
+  onSessionChange: (sessionId: SessionSelection) => void;
+  onNewSession: () => void | Promise<void>;
+}) {
+  return (
+    <div className="grid gap-5">
+      <div className="px-2">
+        <Button className="h-9 w-full justify-start gap-2 bg-white/10 text-[#f2f2f2] hover:bg-white/14" type="button" onClick={onNewSession}>
+          <Plus size={16} />
+          New session
+        </Button>
+      </div>
+
+      <div className="grid gap-1">
+        <div className="px-3 pb-1 text-xs font-medium text-[#8e8e8e]">Telemetry</div>
+        {canSelectLive ? (
+          <button
+            className={cn(
+              "w-full rounded-lg px-3 py-2.5 text-left transition hover:bg-white/8",
+              selectedValue === "live" ? "bg-white/10 text-white" : "text-[#d0d0d0]"
+            )}
+            type="button"
+            onClick={() => onSessionChange("live")}
           >
-            <div className="flex h-16 shrink-0 items-center justify-between gap-3 border-b border-border px-4">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 text-sm font-semibold">
-                  <History size={16} />
-                  Sessions
-                  {canSelectLive ? <Badge variant="secondary">Live</Badge> : <Badge variant="outline">Saved</Badge>}
-                </div>
-                <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                  {selectedValue === "live" ? "Viewing live telemetry" : `Viewing ${shortSessionId(selectedValue)}`}
-                </p>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
+                <Radio size={15} />
+                <span className="truncate">Live session</span>
               </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                type="button"
-                onClick={() => setIsOpen(false)}
-                aria-label="Close sessions"
-              >
-                <X size={17} />
-              </Button>
+              {selectedValue === "live" ? <Check size={15} /> : <Badge className="h-5 bg-[#4cc38a]/15 text-[#70e0a6]">Live</Badge>}
             </div>
+            <div className="mt-1 truncate pl-6 text-xs text-[#8f8f8f]">
+              {liveSessionId ? shortSessionId(liveSessionId) : "Waiting for telemetry"}
+            </div>
+            <div className="mt-2 grid grid-cols-3 gap-2 pl-6 text-xs text-[#8f8f8f]">
+              <span>{(livePackets ?? 0).toLocaleString()} pkt</span>
+              <span>{(liveBadPackets ?? 0).toLocaleString()} bad</span>
+              <span className="truncate">{formatSessionTime(liveLastPacketAt)}</span>
+            </div>
+            <div className="mt-1 truncate pl-6 text-xs text-[#8f8f8f]">
+              {liveTelemetry
+                ? formatCar({
+                  carOrdinal: liveTelemetry.CarOrdinal,
+                  carClass: liveTelemetry.CarClass,
+                  carPerformanceIndex: liveTelemetry.CarPerformanceIndex,
+                  drivetrainType: liveTelemetry.DrivetrainType
+                })
+                : "No car telemetry"}
+            </div>
+          </button>
+        ) : null}
+      </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
-              <div className="grid gap-2">
-                {canSelectLive ? (
-                  <button
-                    className={cn(
-                      "grid w-full gap-2 rounded-lg border p-3 text-left transition hover:bg-muted/70",
-                      selectedValue === "live" ? "border-foreground bg-muted" : "border-border bg-background"
-                    )}
-                    type="button"
-                    onClick={() => selectSession("live")}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 text-sm font-semibold">
-                          <Radio size={15} />
-                          Live session
-                        </div>
-                        <p className="mt-1 truncate text-xs text-muted-foreground">
-                          {liveSessionId ? shortSessionId(liveSessionId) : "Waiting for telemetry"}
-                        </p>
-                      </div>
-                      {selectedValue === "live" ? <Check className="mt-0.5 text-foreground" size={16} /> : null}
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <Car size={14} />
-                      <span className="truncate">
-                        {liveTelemetry
-                          ? formatCar({
-                            carOrdinal: liveTelemetry.CarOrdinal,
-                            carClass: liveTelemetry.CarClass,
-                            carPerformanceIndex: liveTelemetry.CarPerformanceIndex,
-                            drivetrainType: liveTelemetry.DrivetrainType
-                          })
-                          : "Waiting for car telemetry"}
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2 text-xs">
-                      <div className="min-w-0">
-                        <div className="font-semibold">{(livePackets ?? 0).toLocaleString()}</div>
-                        <div className="text-muted-foreground">Packets</div>
-                      </div>
-                      <div className="min-w-0">
-                        <div className="truncate font-semibold">{formatSessionTime(liveLastPacketAt)}</div>
-                        <div className="text-muted-foreground">Last packet</div>
-                      </div>
-                      <div className="min-w-0">
-                        <div className="font-semibold">{(liveBadPackets ?? 0).toLocaleString()}</div>
-                        <div className="text-muted-foreground">Bad</div>
-                      </div>
-                    </div>
-                  </button>
-                ) : null}
-
-                {sessions.map((session) => {
-                  const isSelected = selectedValue === session.id;
-
-                  return (
-                    <button
-                      key={session.id}
-                      className={cn(
-                        "grid w-full gap-2 rounded-lg border p-3 text-left transition hover:bg-muted/70",
-                        isSelected ? "border-foreground bg-muted" : "border-border bg-background"
-                      )}
-                      type="button"
-                      onClick={() => selectSession(session.id)}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-semibold">{formatSessionTime(session.startedAt)}</div>
-                          <p className="mt-1 truncate text-xs text-muted-foreground">{shortSessionId(session.id)}</p>
-                        </div>
-                        {isSelected ? <Check className="mt-0.5 text-foreground" size={16} /> : null}
-                      </div>
-
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <Car size={14} />
-                        <span className="truncate">{formatCar(session)}</span>
-                      </div>
-
-                      <div className="grid grid-cols-3 gap-2 text-xs">
-                        <div>
-                          <div className="font-semibold">{session.packetCount.toLocaleString()}</div>
-                          <div className="text-muted-foreground">Packets</div>
-                        </div>
-                        <div>
-                          <div className="font-semibold">{formatDuration(session)}</div>
-                          <div className="text-muted-foreground">Duration</div>
-                        </div>
-                        <div>
-                          <div className="font-semibold">{session.badPacketCount.toLocaleString()}</div>
-                          <div className="text-muted-foreground">Bad</div>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <Clock size={14} />
-                        Last packet {formatSessionTime(session.lastPacketAt)}
-                      </div>
-                    </button>
-                  );
-                })}
-
-                {!canSelectLive && sessions.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
-                    No saved sessions yet.
-                  </div>
-                ) : null}
+      <div className="grid gap-1">
+        <div className="px-3 pb-1 text-xs font-medium text-[#8e8e8e]">Sessions</div>
+        {sessions.map((session) => {
+          const isSelected = selectedValue === session.id;
+          return (
+            <button
+              key={session.id}
+              className={cn(
+                "w-full rounded-lg px-3 py-2.5 text-left transition hover:bg-white/8",
+                isSelected ? "bg-white/10 text-white" : "text-[#d0d0d0]"
+              )}
+              type="button"
+              onClick={() => onSessionChange(session.id)}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0 truncate text-sm font-medium">{formatSessionTime(session.startedAt)}</div>
+                {isSelected ? <Check size={15} /> : null}
               </div>
-            </div>
+              <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-[#8f8f8f]">
+                <Car size={13} />
+                <span className="truncate">{formatCar(session)}</span>
+              </div>
+              <div className="mt-2 flex items-center gap-3 text-xs text-[#8f8f8f]">
+                <span>{session.packetCount.toLocaleString()} pkt</span>
+                <span>{formatDuration(session)}</span>
+                <span>{session.badPacketCount.toLocaleString()} bad</span>
+              </div>
+              <div className="mt-1 flex items-center gap-2 text-xs text-[#8f8f8f]">
+                <Clock size={13} />
+                <span className="truncate">{shortSessionId(session.id)}</span>
+              </div>
+            </button>
+          );
+        })}
 
-            <Separator />
-            <div className="shrink-0 p-3">
-              <Button className="h-10 w-full gap-2" type="button" onClick={startNewSession}>
-                <Plus size={17} />
-                New session
-              </Button>
-            </div>
-          </aside>
-        </div>
+        {!canSelectLive && sessions.length === 0 ? (
+          <div className="px-3 py-2 text-sm text-[#8f8f8f]">No saved sessions yet.</div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function CollapsedSessions({
+  sessions,
+  selectedValue,
+  canSelectLive,
+  onSessionChange,
+  onNewSession
+}: {
+  sessions: SessionSummary[];
+  selectedValue: SessionSelection | "__none";
+  canSelectLive: boolean;
+  onSessionChange: (sessionId: SessionSelection) => void;
+  onNewSession: () => void | Promise<void>;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <Button className="size-10 bg-white/10 text-[#f2f2f2] hover:bg-white/14" size="icon" type="button" onClick={onNewSession} aria-label="New session">
+        <Plus size={17} />
+      </Button>
+      {canSelectLive ? (
+        <button
+          className={cn(
+            "flex size-10 items-center justify-center rounded-lg transition hover:bg-white/8",
+            selectedValue === "live" ? "bg-white/10 text-white" : "text-[#bdbdbd]"
+          )}
+          type="button"
+          onClick={() => onSessionChange("live")}
+          aria-label="Live session"
+        >
+          <Radio size={17} />
+        </button>
       ) : null}
-    </>
+      {sessions.slice(0, 10).map((session) => (
+        <button
+          key={session.id}
+          className={cn(
+            "flex size-10 items-center justify-center rounded-lg text-xs font-medium transition hover:bg-white/8",
+            selectedValue === session.id ? "bg-white/10 text-white" : "text-[#bdbdbd]"
+          )}
+          type="button"
+          onClick={() => onSessionChange(session.id)}
+          aria-label={`Session ${shortSessionId(session.id)}`}
+        >
+          {new Date(session.startedAt).getDate()}
+        </button>
+      ))}
+    </div>
   );
 }

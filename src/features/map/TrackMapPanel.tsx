@@ -1,6 +1,6 @@
 import * as React from "react";
 import type { MapDragState, PathSample, SvgPoint, SvgViewBox, Telemetry } from "@/types/telemetry";
-import { buildTireMfdData, tireTemperatureColor } from "@/features/dashboard/telemetryVisuals";
+import { buildTireMfdData, tireTemperatureColor } from "@/features/telemetry/tireVisuals";
 import { clampNumber } from "@/lib/math";
 import { MapControls } from "./MapControls";
 import { MapLegend } from "./MapLegend";

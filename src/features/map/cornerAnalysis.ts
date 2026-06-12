@@ -1,6 +1,5 @@
 import type { CornerEffect, CornerPhaseEffect, CornerSegment, MapPathEffect, PathRenderSegment, PathSample, SvgPoint, Telemetry } from "@/types/telemetry";
 import { average, clampNumber, normalizeRadians, radiansToDegrees } from "@/lib/math";
-import { MAP_IMAGE_HEIGHT, MAP_IMAGE_WIDTH, MAX_MAP_ZOOM, clampMapViewBox, defaultSessionMapViewBox } from "./mapGeometry";
 
 const CORNER_SMOOTH_DISTANCE_METERS = 35;
 const CORNER_LOOK_DISTANCE_METERS = 95;
@@ -106,27 +105,6 @@ function pointPathDistance(points: SvgPoint[]) {
     distance += Math.hypot(points[index].x - points[index - 1].x, points[index].y - points[index - 1].y);
   }
   return distance;
-}
-
-
-export function viewBoxForPointRange(points: SvgPoint[], startIndex: number, endIndex: number) {
-  const selectedPoints = points.slice(startIndex, endIndex);
-  if (!selectedPoints.length) return defaultSessionMapViewBox();
-
-  const minX = Math.min(...selectedPoints.map((point) => point.x));
-  const maxX = Math.max(...selectedPoints.map((point) => point.x));
-  const minY = Math.min(...selectedPoints.map((point) => point.y));
-  const maxY = Math.max(...selectedPoints.map((point) => point.y));
-  const padding = 90;
-  const width = Math.max(MAP_IMAGE_WIDTH / MAX_MAP_ZOOM, maxX - minX + padding * 2);
-  const height = Math.max(MAP_IMAGE_HEIGHT / MAX_MAP_ZOOM, maxY - minY + padding * 2);
-
-  return clampMapViewBox({
-    x: minX - padding,
-    y: minY - padding,
-    width,
-    height
-  });
 }
 
 
@@ -335,14 +313,6 @@ export function rearTireSlipAngle(telemetry: Telemetry) {
   return average([
     Math.abs(telemetry.TireSlipAngleRearLeft),
     Math.abs(telemetry.TireSlipAngleRearRight)
-  ]);
-}
-
-
-function rearTireCombinedSlip(telemetry: Telemetry) {
-  return average([
-    Math.abs(telemetry.TireCombinedSlipRearLeft),
-    Math.abs(telemetry.TireCombinedSlipRearRight)
   ]);
 }
 
