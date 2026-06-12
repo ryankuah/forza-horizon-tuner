@@ -8,22 +8,14 @@ import {
   Gauge,
   History,
   Minus,
-  OctagonAlert,
   Plus,
   RotateCcw,
   Trash2,
-  Wrench,
 } from "lucide-react";
-import "./main.css";
+import "tailwindcss/index";
 
 const MAX_PATH_POINTS = 5000;
 const MIN_PATH_STEP_METERS = 1.5;
-const MIN_IMPACT_EVENT_GAP_MS = 1500;
-const MIN_IMPACT_EVENT_GAP_METERS = 25;
-const MIN_IMPACT_SPEED_DROP_MPS = 5;
-const MIN_IMPACT_DECEL_MPS2 = 18;
-const MIN_IMPACT_HORIZONTAL_ACCEL_MPS2 = 24;
-const MIN_SMASHABLE_IMPACT_VEL_DIFF = 4;
 const MAP_EFFECT_SMOOTH_RADIUS = 3;
 const MIN_MAP_EFFECT_RUN_POINTS = 6;
 const MAP_IMAGE_URL = "/fh6-map-reveal.jpg";
@@ -33,6 +25,17 @@ const CAR_FOLLOW_MAP_ZOOM = 8;
 const MAX_MAP_ZOOM = CAR_FOLLOW_MAP_ZOOM * 8;
 const MAP_ZOOM_STEP = 1.35;
 const MAP_DRAG_THRESHOLD_PX = 4;
+const CORNER_SMOOTH_DISTANCE_METERS = 35;
+const CORNER_LOOK_DISTANCE_METERS = 95;
+const CORNER_EXTENSION_DISTANCE_METERS = 60;
+const CORNER_PAD_DISTANCE_METERS = 65;
+const MIN_CORNER_TURN_DEGREES = 15;
+const MIN_CORNER_EXTENSION_DEGREES = 2.4;
+const MIN_CORNER_RUN_METERS = 70;
+const MAX_CORNER_MERGE_GAP_METERS = 110;
+const MIN_BALANCE_SLIP_ANGLE = 0.28;
+const SLIP_ANGLE_BALANCE_THRESHOLD = 0.12;
+const WHEELSPIN_REAR_COMBINED_SLIP = 0.75;
 
 const MAP_CALIBRATION_STORAGE_KEY = "fh6MapCalibration";
 const MAP_CALIBRATION_VIEWBOX_STORAGE_KEY = "fh6MapCalibrationViewBox";
@@ -243,18 +246,25 @@ type MapEffect =
   | "understeer"
   | "oversteer"
   | "wheelspin";
+type CornerEffect =
+  | "straight"
+  | "leftCorner"
+  | "rightCorner";
+type MapPathEffect = MapEffect | CornerEffect;
 type PathRenderSegment = {
-  effect: MapEffect;
+  effect: MapPathEffect;
   points: SvgPoint[];
 };
-type PathEventMarker = {
-  event: "impact";
-  point: SvgPoint;
-  sampleIndex: number;
+type CornerSegment = {
+  id: number;
+  startIndex: number;
+  endIndex: number;
+  effect: Exclude<CornerEffect, "straight">;
+  samples: PathSample[];
 };
 type TelemetryValue = number | string | null | undefined;
 type TelemetryFieldName = Extract<keyof Telemetry, string>;
-type RightPanelTab = "data" | "tuning";
+type RightPanelTab = "car" | "data";
 type SessionSelection = "live" | string;
 type SessionSummary = {
   id: string;
@@ -853,7 +863,7 @@ function App() {
   const [path, setPath] = React.useState<PathSample[]>([]);
   const [hoverIndex, setHoverIndex] = React.useState<number | null>(null);
   const [selectedIndex, setSelectedIndex] = React.useState<number | null>(null);
-  const [rightPanelTab, setRightPanelTab] = React.useState<RightPanelTab>("tuning");
+  const [rightPanelTab, setRightPanelTab] = React.useState<RightPanelTab>("car");
   const [sessions, setSessions] = React.useState<SessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = React.useState<SessionSelection>("live");
   const [sessionDetail, setSessionDetail] = React.useState<SessionDetail | null>(null);
@@ -1081,10 +1091,9 @@ function PathPanel({
 }) {
   const svgRef = React.useRef<SVGSVGElement | null>(null);
   const dragRef = React.useRef<MapDragState | null>(null);
-  const [viewBox, setViewBox] = React.useState<SvgViewBox>(() => initialMapViewBox());
+  const [viewBox, setViewBox] = React.useState<SvgViewBox>(() => defaultSessionMapViewBox());
   const geometry = buildPathGeometry(path);
-  const renderSegments = buildPathRenderSegments(path, geometry.points);
-  const eventMarkers = buildPathEventMarkers(path, geometry.points);
+  const renderSegments = buildPathRenderSegments(path, geometry.points, "corners");
   const currentPoint = geometry.points[geometry.points.length - 1];
   const currentSample = path[path.length - 1];
   const hoverPoint = hoverIndex === null ? null : geometry.points[hoverIndex];
@@ -1097,7 +1106,7 @@ function PathPanel({
 
   React.useEffect(() => {
     if (!currentPoint) {
-      setViewBox(initialMapViewBox());
+      setViewBox(defaultSessionMapViewBox());
       return;
     }
 
@@ -1183,20 +1192,16 @@ function PathPanel({
     if (!svgRef.current) return;
 
     event.preventDefault();
-    zoomMapAt(currentPoint ?? viewBoxCenter(viewBox), event.deltaY > 0 ? MAP_ZOOM_STEP : 1 / MAP_ZOOM_STEP);
+    const cursor = clientPointToSvgPoint(svgRef.current, event);
+    zoomMapAt(cursor ?? viewBoxCenter(viewBox), event.deltaY > 0 ? MAP_ZOOM_STEP : 1 / MAP_ZOOM_STEP);
   }
 
   function zoomMapAt(focus: SvgPoint, factor: number) {
-    setViewBox((current) => {
-      const zoomed = zoomViewBoxAtPoint(current, focus, factor);
-      return currentPoint
-        ? centerViewBoxAtPoint(currentPoint, zoomed.width, zoomed.height)
-        : zoomed;
-    });
+    setViewBox((current) => zoomViewBoxAtPoint(current, focus, factor));
   }
 
-  function zoomMapFromCenter(factor: number) {
-    zoomMapAt(currentPoint ?? viewBoxCenter(viewBox), factor);
+  function zoomMapFromSelectedPoint(factor: number) {
+    setViewBox((current) => zoomViewBoxAtPoint(current, selectedPoint ?? currentPoint ?? viewBoxCenter(current), factor));
   }
 
   return (
@@ -1237,7 +1242,7 @@ function PathPanel({
                   key={`${segment.effect}-${index}`}
                   className={[
                     "fill-none [stroke-linecap:round] [stroke-linejoin:round] [stroke-width:4] [vector-effect:non-scaling-stroke]",
-                    mapEffectStrokeClass(segment.effect)
+                    mapPathStrokeClass(segment.effect)
                   ].join(" ")}
                   points={segment.points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}
                 />
@@ -1248,33 +1253,32 @@ function PathPanel({
               Waiting for position samples
             </text>
           )}
-          {eventMarkers.map((marker) => (
-            <ImpactMarker key={`${marker.event}-${marker.sampleIndex}`} point={marker.point} />
-          ))}
           {selectedPoint && selectedSample ? (
-            <CarMarker point={selectedPoint} yaw={selectedSample.telemetry.Yaw} variant="selected" />
+            <PathSelectionMarker point={selectedPoint} />
           ) : null}
           {hoverPoint && hoverSample ? (
-            <CarMarker point={hoverPoint} yaw={hoverSample.telemetry.Yaw} variant="hover" />
+            <MfdCarMarker point={hoverPoint} telemetry={hoverSample.telemetry} variant="hover" />
           ) : null}
-          {currentPoint && currentSample ? (
-            <CarMarker point={currentPoint} yaw={currentSample.telemetry.Yaw} variant="current" />
+          {hoverPoint && hoverSample ? null : (selectedPoint && selectedSample) ? (
+            <MfdCarMarker point={selectedPoint} telemetry={selectedSample.telemetry} variant="selected" />
+          ) : currentPoint && currentSample ? (
+            <MfdCarMarker point={currentPoint} telemetry={currentSample.telemetry} variant="current" />
           ) : null}
         </svg>
         <MapControls
           canZoomIn={canZoomIn}
           canZoomOut={canZoomOut}
           zoomPct={zoomPct}
-          onZoomIn={() => zoomMapFromCenter(1 / MAP_ZOOM_STEP)}
-          onZoomOut={() => zoomMapFromCenter(MAP_ZOOM_STEP)}
+          onZoomIn={() => zoomMapFromSelectedPoint(1 / MAP_ZOOM_STEP)}
+          onZoomOut={() => zoomMapFromSelectedPoint(MAP_ZOOM_STEP)}
           onReset={() => {
             setViewBox(currentPoint
               ? centerViewBoxAtPoint(currentPoint, MAP_IMAGE_WIDTH / CAR_FOLLOW_MAP_ZOOM, MAP_IMAGE_HEIGHT / CAR_FOLLOW_MAP_ZOOM)
-              : initialMapViewBox()
+              : defaultSessionMapViewBox()
             );
           }}
         />
-        <MapLegend />
+        <MapLegend hasSelectedPoint={Boolean(selectedPoint)} />
       </div>
     </section>
   );
@@ -1359,55 +1363,53 @@ function MapControls({
   );
 }
 
-function CarMarker({ point, yaw, variant }: { point: SvgPoint; yaw: number; variant: "current" | "hover" | "selected" }) {
-  const rotation = yawToSvgDegrees(yaw);
-  const isHover = variant === "hover";
-  const isSelected = variant === "selected";
-
+function PathSelectionMarker({ point }: { point: SvgPoint }) {
   return (
-    <g transform={`translate(${point.x} ${point.y}) rotate(${rotation})`}>
-      <circle
-        className={[
-          isSelected
-            ? "fill-[#63da97]/15 stroke-[#63da97]/70"
-            : isHover
-              ? "fill-[#f3d09b]/15 stroke-[#f3d09b]/60"
-              : "fill-[#e46645]/15 stroke-[#e46645]/50",
-          "[stroke-width:1] [vector-effect:non-scaling-stroke]"
-        ].join(" ")}
-        r={isSelected ? 20 : isHover ? 18 : 14}
-      />
-      <path
-        className={[
-          isSelected
-            ? "fill-[#63da97] stroke-[#101312]"
-            : isHover
-              ? "fill-[#f3d09b] stroke-[#101312]"
-              : "fill-[#e46645] stroke-[#f5f7f6]",
-          "[stroke-linejoin:round] [stroke-width:1.8] [vector-effect:non-scaling-stroke]"
-        ].join(" ")}
-        d="M 0 -13 L 8 9 L 3 7 L 0 12 L -3 7 L -8 9 Z"
-      />
-      <path
-        className={[
-          isHover || isSelected ? "stroke-[#101312]" : "stroke-[#f5f7f6]",
-          "fill-none [stroke-linecap:round] [stroke-width:1.2] [vector-effect:non-scaling-stroke]"
-        ].join(" ")}
-        d="M -3 -3 L 3 -3 M -4 4 L 4 4"
-      />
+    <g transform={`translate(${point.x} ${point.y})`}>
+      <circle className="fill-[#f3d09b]/10 stroke-[#f3d09b] [stroke-dasharray:5_4] [stroke-width:2] [vector-effect:non-scaling-stroke]" r="24" />
+      <circle className="fill-[#101312] stroke-[#f3d09b] [stroke-width:2] [vector-effect:non-scaling-stroke]" r="5" />
     </g>
   );
 }
 
-function ImpactMarker({ point }: { point: SvgPoint }) {
+function MfdCarMarker({ point, telemetry, variant }: { point: SvgPoint; telemetry: Telemetry; variant: "current" | "hover" | "selected" }) {
+  const rotation = yawToSvgDegrees(telemetry.Yaw);
+  const tires = buildTireMfdData(telemetry);
+  const tireLayout = [
+    { id: "front-left", x: -8, y: -12 },
+    { id: "front-right", x: 8, y: -12 },
+    { id: "rear-left", x: -8, y: 12 },
+    { id: "rear-right", x: 8, y: 12 }
+  ];
+  const ringClass = variant === "selected"
+    ? "fill-[#f3d09b]/12 stroke-[#f3d09b]/75"
+    : variant === "hover"
+      ? "fill-[#63da97]/12 stroke-[#63da97]/70"
+    : "fill-[#e46645]/12 stroke-[#e46645]/60";
+
   return (
-    <g transform={`translate(${point.x} ${point.y})`}>
-      <circle className="fill-[#ff243d]/15 stroke-[#ff243d]/60 [stroke-width:2] [vector-effect:non-scaling-stroke]" r="15" />
-      <foreignObject x="-9" y="-9" width="18" height="18" className="overflow-visible">
-        <div className="grid h-[18px] w-[18px] place-items-center rounded-full bg-[#ff243d] text-[#f5f7f6]">
-          <OctagonAlert size={13} strokeWidth={2.4} />
-        </div>
-      </foreignObject>
+    <g transform={`translate(${point.x} ${point.y}) rotate(${rotation})`}>
+      <circle className={`${ringClass} [stroke-width:1.5] [vector-effect:non-scaling-stroke]`} r={variant === "selected" ? 25 : variant === "hover" ? 23 : 21} />
+      <rect className="fill-[#101312]/85 stroke-[#f5f7f6]/45 [stroke-width:1.2] [vector-effect:non-scaling-stroke]" x="-7" y="-18" width="14" height="36" rx="4" />
+      <path className="fill-[#f3d09b] stroke-[#101312] [stroke-linejoin:round] [stroke-width:1] [vector-effect:non-scaling-stroke]" d="M 0 -23 L 5 -15 L -5 -15 Z" />
+      {tireLayout.map((layout) => {
+        const tire = tires.find((candidate) => candidate.id === layout.id);
+        const slipOpacity = tire ? clampNumber(Math.abs(tire.combinedSlip), 0.18, 1) : 0.18;
+        return (
+          <g key={layout.id} transform={`translate(${layout.x} ${layout.y}) rotate(${tire?.steerAngleDeg ?? 0})`}>
+            <rect
+              className="stroke-[#101312] [stroke-width:1] [vector-effect:non-scaling-stroke]"
+              x="-4"
+              y="-7"
+              width="8"
+              height="14"
+              rx="2"
+              fill={tireTemperatureColor(tire?.temp ?? 0)}
+            />
+            <rect x="-4" y={7 - slipOpacity * 14} width="8" height={slipOpacity * 14} rx="1.5" fill="rgba(0,0,0,0.32)" />
+          </g>
+        );
+      })}
     </g>
   );
 }
@@ -1417,33 +1419,32 @@ function yawToSvgDegrees(yaw: number) {
   return (yaw * 180) / Math.PI;
 }
 
-function MapLegend() {
-  const items: { effect: MapEffect; label: string }[] = [
-    { effect: "normal", label: "Normal" },
-    { effect: "understeer", label: "Understeer" },
-    { effect: "oversteer", label: "Oversteer" },
-    { effect: "wheelspin", label: "Wheelspin" }
+function MapLegend({ hasSelectedPoint }: { hasSelectedPoint: boolean }) {
+  const items: { effect: MapPathEffect; label: string }[] = [
+    { effect: "straight", label: "Straight" },
+    { effect: "leftCorner", label: "Left corner" },
+    { effect: "rightCorner", label: "Right corner" }
   ];
 
   return (
     <div className="pointer-events-none absolute bottom-3 left-3 flex max-w-[calc(100%-1.5rem)] flex-wrap gap-x-3 gap-y-1.5 rounded-md border border-white/10 bg-[#070a09]/75 px-3 py-2 text-[11px] font-bold text-[#c7d0cb] backdrop-blur">
       {items.map((item) => (
         <span key={item.effect} className="flex items-center gap-1.5">
-          <span className={`h-2 w-4 rounded-full ${mapEffectSwatchClass(item.effect)}`} />
+          <span className={`h-2 w-4 rounded-full ${mapPathSwatchClass(item.effect)}`} />
           {item.label}
         </span>
       ))}
-      <span className="flex items-center gap-1.5">
-        <span className="grid h-4 w-4 place-items-center rounded-full bg-[#ff243d] text-[#f5f7f6]">
-          <OctagonAlert size={10} strokeWidth={2.5} />
+      {hasSelectedPoint ? (
+        <span className="flex items-center gap-1.5">
+          <span className="h-2 w-4 rounded-full border border-[#f3d09b] bg-[#f3d09b]/20" />
+          Pinned sample
         </span>
-        Impact
-      </span>
+      ) : null}
     </div>
   );
 }
 
-function clientPointToSvgPoint(svg: SVGSVGElement, event: React.PointerEvent<SVGSVGElement>): SvgPoint | null {
+function clientPointToSvgPoint(svg: SVGSVGElement, event: { clientX: number; clientY: number }): SvgPoint | null {
   return clientCoordinatesToSvgPoint(svg, event.clientX, event.clientY);
 }
 
@@ -1465,6 +1466,14 @@ function initialMapViewBox(): SvgViewBox {
     width: MAP_IMAGE_WIDTH,
     height: MAP_IMAGE_HEIGHT
   };
+}
+
+function defaultSessionMapViewBox(): SvgViewBox {
+  return centerViewBoxAtPoint(
+    { x: MAP_IMAGE_WIDTH / 2, y: MAP_IMAGE_HEIGHT / 2 },
+    MAP_IMAGE_WIDTH / CAR_FOLLOW_MAP_ZOOM,
+    MAP_IMAGE_HEIGHT / CAR_FOLLOW_MAP_ZOOM
+  );
 }
 
 function mapZoomPercent(viewBox: SvgViewBox) {
@@ -1541,11 +1550,20 @@ function viewBoxCenter(viewBox: SvgViewBox): SvgPoint {
   };
 }
 
-function buildPathRenderSegments(path: PathSample[], points: SvgPoint[]): PathRenderSegment[] {
+function viewBoxTopRight(viewBox: SvgViewBox): SvgPoint {
+  return {
+    x: viewBox.x + viewBox.width,
+    y: viewBox.y
+  };
+}
+
+function buildPathRenderSegments(path: PathSample[], points: SvgPoint[], mode: "corners" | "balance"): PathRenderSegment[] {
   if (path.length < 2 || points.length < 2) return [];
 
   const segments: PathRenderSegment[] = [];
-  const effects = smoothMapEffects(path);
+  const effects = mode === "balance"
+    ? smoothMapEffects(path)
+    : smoothCornerEffects(path);
 
   for (let index = 1; index < points.length; index += 1) {
     const effect = effects[index] ?? "normal";
@@ -1566,42 +1584,30 @@ function buildPathRenderSegments(path: PathSample[], points: SvgPoint[]): PathRe
   return segments;
 }
 
-function buildPathEventMarkers(path: PathSample[], points: SvgPoint[]): PathEventMarker[] {
-  const markers: PathEventMarker[] = [];
-  let lastImpact: PathSample | null = null;
-
-  path.forEach((sample, index) => {
-    const point = points[index];
-    const previous = index > 0 ? path[index - 1] : null;
-    if (!point || !isImpact(sample, previous)) return;
-
-    if (lastImpact) {
-      const elapsedMs = sample.at - lastImpact.at;
-      const distance = Math.hypot(sample.x - lastImpact.x, sample.z - lastImpact.z);
-      if (elapsedMs < MIN_IMPACT_EVENT_GAP_MS || distance < MIN_IMPACT_EVENT_GAP_METERS) {
-        return;
-      }
-    }
-
-    markers.push({
-      event: "impact" as const,
-      point,
-      sampleIndex: index
-    });
-    lastImpact = sample;
-  });
-
-  return markers;
+function buildCornerSegments(path: PathSample[]): CornerSegment[] {
+  const effects = smoothCornerEffects(path);
+  return cornerRuns(effects)
+    .filter((run): run is CornerRun & { effect: Exclude<CornerEffect, "straight"> } => run.effect !== "straight")
+    .map((run, id) => ({
+      id,
+      startIndex: run.start,
+      endIndex: run.end,
+      effect: run.effect,
+      samples: path.slice(run.start, run.end)
+    }));
 }
 
 function classifyMapEffect(telemetry: Telemetry): MapEffect {
-  const slipBalance = telemetry.slipBalance;
+  const frontSlipAngle = frontTireSlipAngle(telemetry);
+  const rearSlipAngle = rearTireSlipAngle(telemetry);
+  const slipAngleBalance = frontSlipAngle - rearSlipAngle;
+  const rearCombinedSlip = rearTireCombinedSlip(telemetry);
   const yawRate = Math.abs(telemetry.AngularVelocityY);
   const lateralAcceleration = Math.abs(telemetry.AccelerationX);
   const turning = Math.abs(telemetry.steerPct) > 12 || yawRate > 0.18 || lateralAcceleration > 2;
-  const wheelspin = telemetry.throttlePct > 45 && telemetry.rearSlip > 0.75;
-  const understeer = turning && slipBalance > 0.18 && telemetry.frontSlip > 0.45;
-  const oversteer = turning && slipBalance < -0.18 && telemetry.rearSlip > 0.45;
+  const wheelspin = telemetry.throttlePct > 45 && rearCombinedSlip > WHEELSPIN_REAR_COMBINED_SLIP;
+  const understeer = turning && slipAngleBalance > SLIP_ANGLE_BALANCE_THRESHOLD && frontSlipAngle > MIN_BALANCE_SLIP_ANGLE;
+  const oversteer = turning && slipAngleBalance < -SLIP_ANGLE_BALANCE_THRESHOLD && rearSlipAngle > MIN_BALANCE_SLIP_ANGLE;
 
   if (wheelspin) return "wheelspin";
   if (understeer) return "understeer";
@@ -1614,23 +1620,204 @@ function smoothMapEffects(path: PathSample[]) {
   return removeShortEffectRuns(effects);
 }
 
+function smoothCornerEffects(path: PathSample[]) {
+  const cornerPath = smoothCornerPath(path);
+  const effects = cornerPath.map((_sample, index) => classifyCornerSeed(cornerPath, index));
+  absorbShortCornerRuns(effects, path);
+  mergeNearbyCornerRuns(effects, path);
+  expandCornerRuns(effects, cornerPath);
+  absorbShortCornerRuns(effects, path);
+  mergeNearbyCornerRuns(effects, path);
+  return effects;
+}
+
+function smoothCornerPath(path: PathSample[]) {
+  return path.map((sample, index) => {
+    let sumX = sample.x;
+    let sumZ = sample.z;
+    let count = 1;
+
+    for (const direction of [-1, 1]) {
+      let distance = 0;
+      let cursor = index;
+
+      while (cursor + direction >= 0 && cursor + direction < path.length && distance < CORNER_SMOOTH_DISTANCE_METERS) {
+        const current = path[cursor];
+        const next = path[cursor + direction];
+        distance += Math.hypot(next.x - current.x, next.z - current.z);
+        cursor += direction;
+        sumX += path[cursor].x;
+        sumZ += path[cursor].z;
+        count += 1;
+      }
+    }
+
+    return {
+      ...sample,
+      x: sumX / count,
+      z: sumZ / count
+    };
+  });
+}
+
+function classifyCornerSeed(path: PathSample[], index: number): CornerEffect {
+  const turnDegrees = cornerTurnDegrees(path, index, CORNER_LOOK_DISTANCE_METERS);
+  if (Math.abs(turnDegrees) < MIN_CORNER_TURN_DEGREES) return "straight";
+  return turnDegrees > 0 ? "leftCorner" : "rightCorner";
+}
+
+function cornerTurnDegrees(path: PathSample[], index: number, lookDistance: number) {
+  const previousIndex = pointIndexAtDistance(path, index, -lookDistance);
+  const nextIndex = pointIndexAtDistance(path, index, lookDistance);
+  if (previousIndex === index || nextIndex === index || previousIndex === nextIndex) return 0;
+
+  const previous = path[previousIndex];
+  const current = path[index];
+  const next = path[nextIndex];
+  const entryHeading = Math.atan2(current.z - previous.z, current.x - previous.x);
+  const exitHeading = Math.atan2(next.z - current.z, next.x - current.x);
+  return radiansToDegrees(normalizeRadians(exitHeading - entryHeading));
+}
+
+type CornerRun = {
+  start: number;
+  end: number;
+  effect: CornerEffect;
+};
+
+function absorbShortCornerRuns(effects: CornerEffect[], path: PathSample[]) {
+  for (const run of cornerRuns(effects)) {
+    if (run.effect === "straight" || runDistanceMeters(path, run) >= MIN_CORNER_RUN_METERS) continue;
+
+    const previous = run.start > 0 ? effects[run.start - 1] : null;
+    const next = run.end < effects.length ? effects[run.end] : null;
+    const replacement = previous && previous !== "straight"
+      ? previous
+      : next && next !== "straight"
+        ? next
+        : "straight";
+
+    fillCornerRun(effects, run, replacement);
+  }
+}
+
+function mergeNearbyCornerRuns(effects: CornerEffect[], path: PathSample[]) {
+  for (const run of cornerRuns(effects)) {
+    if (run.effect !== "straight" || runDistanceMeters(path, run) > MAX_CORNER_MERGE_GAP_METERS) continue;
+
+    const previous = run.start > 0 ? effects[run.start - 1] : null;
+    const next = run.end < effects.length ? effects[run.end] : null;
+    if (previous && next && previous === next && previous !== "straight") {
+      fillCornerRun(effects, run, previous);
+    }
+  }
+}
+
+function expandCornerRuns(effects: CornerEffect[], path: PathSample[]) {
+  for (const run of cornerRuns(effects)) {
+    if (run.effect === "straight") continue;
+
+    const direction = run.effect === "leftCorner" ? 1 : -1;
+    let start = run.start;
+    let end = run.end;
+    let startPadDistance = 0;
+    let endPadDistance = 0;
+
+    while (start > 0 && effects[start - 1] === "straight" && startPadDistance < CORNER_PAD_DISTANCE_METERS) {
+      startPadDistance += Math.hypot(path[start].x - path[start - 1].x, path[start].z - path[start - 1].z);
+      start -= 1;
+    }
+
+    while (end < effects.length && effects[end] === "straight" && endPadDistance < CORNER_PAD_DISTANCE_METERS) {
+      endPadDistance += Math.hypot(path[end].x - path[end - 1].x, path[end].z - path[end - 1].z);
+      end += 1;
+    }
+
+    while (start > 0 && effects[start - 1] === "straight" && shouldExtendCorner(path, start - 1, direction)) {
+      start -= 1;
+    }
+
+    while (end < effects.length && effects[end] === "straight" && shouldExtendCorner(path, end, direction)) {
+      end += 1;
+    }
+
+    for (let index = start; index < end; index += 1) {
+      effects[index] = run.effect;
+    }
+  }
+}
+
+function shouldExtendCorner(path: PathSample[], index: number, direction: 1 | -1) {
+  const turnDegrees = cornerTurnDegrees(path, index, CORNER_EXTENSION_DISTANCE_METERS);
+  if (Math.sign(turnDegrees) !== direction) return false;
+  return Math.abs(turnDegrees) >= MIN_CORNER_EXTENSION_DEGREES;
+}
+
+function cornerRuns(effects: CornerEffect[]): CornerRun[] {
+  const runs: CornerRun[] = [];
+  let index = 0;
+
+  while (index < effects.length) {
+    const start = index;
+    const effect = effects[index];
+    while (index < effects.length && effects[index] === effect) {
+      index += 1;
+    }
+    runs.push({ start, end: index, effect });
+  }
+
+  return runs;
+}
+
+function fillCornerRun(effects: CornerEffect[], run: CornerRun, effect: CornerEffect) {
+  for (let index = run.start; index < run.end; index += 1) {
+    effects[index] = effect;
+  }
+}
+
+function runDistanceMeters(path: PathSample[], run: CornerRun) {
+  if (run.end - run.start < 2) return 0;
+  let distance = 0;
+  for (let index = run.start + 1; index < run.end; index += 1) {
+    distance += Math.hypot(path[index].x - path[index - 1].x, path[index].z - path[index - 1].z);
+  }
+  return distance;
+}
+
+function pointIndexAtDistance(path: PathSample[], startIndex: number, targetDistance: number) {
+  const direction = targetDistance < 0 ? -1 : 1;
+  const distanceGoal = Math.abs(targetDistance);
+  let distance = 0;
+  let index = startIndex;
+
+  while (index + direction >= 0 && index + direction < path.length && distance < distanceGoal) {
+    const current = path[index];
+    const next = path[index + direction];
+    distance += Math.hypot(next.x - current.x, next.z - current.z);
+    index += direction;
+  }
+
+  return index;
+}
+
 function classifyMapEffectWindow(path: PathSample[], index: number): MapEffect {
   const start = Math.max(0, index - MAP_EFFECT_SMOOTH_RADIUS);
   const end = Math.min(path.length, index + MAP_EFFECT_SMOOTH_RADIUS + 1);
   const samples = path.slice(start, end).map((sample) => sample.telemetry);
   const avg = (read: (telemetry: Telemetry) => number) => average(samples.map(read));
 
-  const slipBalance = avg((telemetry) => telemetry.slipBalance);
+  const frontSlipAngle = avg(frontTireSlipAngle);
+  const rearSlipAngle = avg(rearTireSlipAngle);
+  const slipAngleBalance = frontSlipAngle - rearSlipAngle;
   const yawRate = avg((telemetry) => Math.abs(telemetry.AngularVelocityY));
   const lateralAcceleration = avg((telemetry) => Math.abs(telemetry.AccelerationX));
   const steerPct = avg((telemetry) => Math.abs(telemetry.steerPct));
   const throttlePct = avg((telemetry) => telemetry.throttlePct);
-  const frontSlip = avg((telemetry) => telemetry.frontSlip);
-  const rearSlip = avg((telemetry) => telemetry.rearSlip);
+  const rearCombinedSlip = avg(rearTireCombinedSlip);
   const turning = steerPct > 12 || yawRate > 0.18 || lateralAcceleration > 2;
-  const wheelspin = throttlePct > 45 && rearSlip > 0.75;
-  const understeer = turning && slipBalance > 0.18 && frontSlip > 0.45;
-  const oversteer = turning && slipBalance < -0.18 && rearSlip > 0.45;
+  const wheelspin = throttlePct > 45 && rearCombinedSlip > WHEELSPIN_REAR_COMBINED_SLIP;
+  const understeer = turning && slipAngleBalance > SLIP_ANGLE_BALANCE_THRESHOLD && frontSlipAngle > MIN_BALANCE_SLIP_ANGLE;
+  const oversteer = turning && slipAngleBalance < -SLIP_ANGLE_BALANCE_THRESHOLD && rearSlipAngle > MIN_BALANCE_SLIP_ANGLE;
 
   if (wheelspin) return "wheelspin";
   if (understeer) return "understeer";
@@ -1638,7 +1825,7 @@ function classifyMapEffectWindow(path: PathSample[], index: number): MapEffect {
   return "normal";
 }
 
-function removeShortEffectRuns(effects: MapEffect[]) {
+function removeShortEffectRuns<T extends MapPathEffect>(effects: T[], minRunPoints = MIN_MAP_EFFECT_RUN_POINTS) {
   const smoothed = [...effects];
   let index = 0;
 
@@ -1652,13 +1839,13 @@ function removeShortEffectRuns(effects: MapEffect[]) {
 
     const runEnd = index;
     const runLength = runEnd - runStart;
-    if (runLength >= MIN_MAP_EFFECT_RUN_POINTS) continue;
+    if (runLength >= minRunPoints) continue;
 
     const previousEffect = runStart > 0 ? smoothed[runStart - 1] : null;
     const nextEffect = runEnd < smoothed.length ? smoothed[runEnd] : null;
     const replacement = previousEffect && previousEffect === nextEffect
       ? previousEffect
-      : previousEffect ?? nextEffect ?? "normal";
+      : previousEffect ?? nextEffect ?? smoothed[runStart];
 
     for (let runIndex = runStart; runIndex < runEnd; runIndex += 1) {
       smoothed[runIndex] = replacement;
@@ -1668,50 +1855,52 @@ function removeShortEffectRuns(effects: MapEffect[]) {
   return smoothed;
 }
 
-function isImpact(sample: PathSample, previous: PathSample | null) {
-  const telemetry = sample.telemetry;
-  if (telemetry.SmashableVelDiff > MIN_SMASHABLE_IMPACT_VEL_DIFF) return true;
-  if (!previous) return false;
-
-  const elapsedSeconds = (sample.at - previous.at) / 1000;
-  if (elapsedSeconds <= 0 || elapsedSeconds > 1) return false;
-
-  const previousSpeedMps = velocityMagnitude(previous.telemetry);
-  const currentSpeedMps = velocityMagnitude(telemetry);
-  const speedDropMps = previousSpeedMps - currentSpeedMps;
-  if (speedDropMps < MIN_IMPACT_SPEED_DROP_MPS) return false;
-
-  const decelMps2 = speedDropMps / elapsedSeconds;
-  const horizontalAccel = Math.hypot(telemetry.AccelerationX, telemetry.AccelerationZ);
-  const verticalAccel = Math.abs(telemetry.AccelerationY);
-  const likelyLanding = verticalAccel > horizontalAccel * 1.25 && verticalAccel > MIN_IMPACT_HORIZONTAL_ACCEL_MPS2;
-  const likelyIntentionalBraking = telemetry.brakePct > 75 && speedDropMps < 9;
-
-  return decelMps2 > MIN_IMPACT_DECEL_MPS2
-    && horizontalAccel > MIN_IMPACT_HORIZONTAL_ACCEL_MPS2
-    && !likelyLanding
-    && !likelyIntentionalBraking;
-}
-
 function velocityMagnitude(telemetry: Telemetry) {
   return Math.hypot(telemetry.VelocityX, telemetry.VelocityY, telemetry.VelocityZ);
 }
 
-function mapEffectStrokeClass(effect: MapEffect) {
+function frontTireSlipAngle(telemetry: Telemetry) {
+  return average([
+    Math.abs(telemetry.TireSlipAngleFrontLeft),
+    Math.abs(telemetry.TireSlipAngleFrontRight)
+  ]);
+}
+
+function rearTireSlipAngle(telemetry: Telemetry) {
+  return average([
+    Math.abs(telemetry.TireSlipAngleRearLeft),
+    Math.abs(telemetry.TireSlipAngleRearRight)
+  ]);
+}
+
+function rearTireCombinedSlip(telemetry: Telemetry) {
+  return average([
+    Math.abs(telemetry.TireCombinedSlipRearLeft),
+    Math.abs(telemetry.TireCombinedSlipRearRight)
+  ]);
+}
+
+function mapPathStrokeClass(effect: MapPathEffect) {
   return {
     normal: "stroke-[#f3d09b]",
     understeer: "stroke-[#59a7ff]",
     oversteer: "stroke-[#ff5a55]",
-    wheelspin: "stroke-[#f7b84b]"
+    wheelspin: "stroke-[#f7b84b]",
+    straight: "stroke-[#d7c7ad]",
+    leftCorner: "stroke-[#63da97]",
+    rightCorner: "stroke-[#e46645]"
   }[effect];
 }
 
-function mapEffectSwatchClass(effect: MapEffect) {
+function mapPathSwatchClass(effect: MapPathEffect) {
   return {
     normal: "bg-[#f3d09b]",
     understeer: "bg-[#59a7ff]",
     oversteer: "bg-[#ff5a55]",
-    wheelspin: "bg-[#f7b84b]"
+    wheelspin: "bg-[#f7b84b]",
+    straight: "bg-[#d7c7ad]",
+    leftCorner: "bg-[#63da97]",
+    rightCorner: "bg-[#e46645]"
   }[effect];
 }
 
@@ -1959,17 +2148,15 @@ function LiveInputsPanel({ telemetry }: { telemetry: Telemetry | null }) {
   const steerPct = clampPercent(telemetry?.steerPct ?? 0);
   const throttlePct = clampPercent(telemetry?.throttlePct ?? 0);
   const brakePct = clampPercent(telemetry?.brakePct ?? 0);
+  const gear = formatGear(telemetry?.Gear);
   const steeringRotation = steerPct * 1.35;
+  const speedKmh = telemetry?.speedKmh ?? 0;
 
   return (
-    <section className={`${panelClass} grid min-h-0 grid-cols-[150px_minmax(0,1fr)] gap-5 p-5`}>
+    <section className={`${panelClass} grid min-h-0 grid-cols-[160px_minmax(0,1fr)] gap-5 p-5`}>
       <div className="flex min-w-0 flex-col items-center justify-center gap-3 border-r border-white/10 pr-5">
-        <div
-          className="grid h-[86px] w-[86px] place-items-center rounded-full border border-white/15 bg-[#070a09]/60 text-[#f3d09b] shadow-[inset_0_0_0_8px_rgba(255,255,255,0.035)] transition-transform duration-100"
-          style={{ transform: `rotate(${steeringRotation}deg)` }}
-          aria-hidden="true"
-        >
-          <Gauge size={48} strokeWidth={1.7} />
+        <div className="grid h-[82px] w-[82px] place-items-center rounded-full border border-white/15 bg-[#070a09]/60 text-[#f3d09b] shadow-[inset_0_0_0_8px_rgba(255,255,255,0.035)]">
+          <SteeringWheelIcon rotation={steeringRotation} />
         </div>
         <div className="grid gap-1 text-center">
           <span className={labelClass}>Steering</span>
@@ -1977,11 +2164,48 @@ function LiveInputsPanel({ telemetry }: { telemetry: Telemetry | null }) {
         </div>
       </div>
 
-      <div className="flex min-w-0 flex-col justify-center gap-4">
-        <InputBar label="Throttle" value={throttlePct} color="#63da97" />
-        <InputBar label="Brake" value={brakePct} color="#e46645" />
+      <div className="grid min-w-0 grid-cols-[76px_minmax(0,1fr)] items-center gap-5">
+        <div className="grid gap-2">
+          <div className="grid h-[64px] place-items-center rounded-lg border border-white/10 bg-[#070a09]/45">
+            <div className="grid gap-1 text-center">
+              <span className={labelClass}>Gear</span>
+              <strong className="text-3xl font-black leading-none tabular-nums text-[#f3d09b]">{gear}</strong>
+            </div>
+          </div>
+          <div className="grid h-[44px] place-items-center rounded-lg border border-white/10 bg-[#070a09]/45">
+            <div className="grid gap-0.5 text-center">
+              <span className={labelClass}>Speed</span>
+              <strong className="text-lg font-black leading-none tabular-nums text-[#f5f7f6]">{formatValue(speedKmh, { precision: 0 })}</strong>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex min-w-0 flex-col justify-center gap-4">
+          <InputBar label="Throttle" value={throttlePct} color="#63da97" />
+          <InputBar label="Brake" value={brakePct} color="#e46645" />
+        </div>
       </div>
     </section>
+  );
+}
+
+function SteeringWheelIcon({ rotation }: { rotation: number }) {
+  return (
+    <svg
+      className="h-[58px] w-[58px] overflow-visible transition-transform duration-100 ease-out"
+      style={{ transform: `rotate(${rotation}deg)` }}
+      viewBox="0 0 64 64"
+      role="img"
+      aria-label="Steering wheel position"
+    >
+      <circle className="fill-none stroke-[#f3d09b] [stroke-width:5.5]" cx="32" cy="32" r="25" />
+      <circle className="fill-[#101312] stroke-[#f3d09b] [stroke-width:4]" cx="32" cy="32" r="7" />
+      <path className="fill-none stroke-[#f3d09b] [stroke-linecap:round] [stroke-linejoin:round] [stroke-width:5.5]" d="M32 39 L32 57" />
+      <path className="fill-none stroke-[#f3d09b] [stroke-linecap:round] [stroke-linejoin:round] [stroke-width:5.5]" d="M26 34 L11 45" />
+      <path className="fill-none stroke-[#f3d09b] [stroke-linecap:round] [stroke-linejoin:round] [stroke-width:5.5]" d="M38 34 L53 45" />
+      <path className="fill-none stroke-[#101312] [stroke-linecap:round] [stroke-width:6]" d="M24 8 L40 8" />
+      <path className="fill-none stroke-[#f3d09b] [stroke-linecap:round] [stroke-width:3.5]" d="M29 7 L35 7" />
+    </svg>
   );
 }
 
@@ -2022,7 +2246,7 @@ function RightPanel({
   onNewSession: () => void;
 }) {
   const tabs: { id: RightPanelTab; label: string; icon: React.ReactNode }[] = [
-    { id: "tuning", label: "Tuning", icon: <Wrench size={16} /> },
+    { id: "car", label: "Car", icon: <Gauge size={16} /> },
     { id: "data", label: "Data", icon: <Activity size={16} /> }
   ];
 
@@ -2074,7 +2298,7 @@ function RightPanel({
           {activeTab === "data" ? (
             <TelemetryDashboard telemetry={telemetry} state={state} />
           ) : (
-            <TuningPanel telemetry={telemetry} state={state} />
+            <CarDataPanel telemetry={telemetry} />
           )}
         </div>
       </div>
@@ -2143,65 +2367,90 @@ function SessionSwitcher({
   );
 }
 
-function TuningPanel({ telemetry, state }: { telemetry: Telemetry | null; state: AppState }) {
-  const tires = buildTireMfdData(telemetry);
-  const bodyAngleDeg = telemetry ? bodyAngleToTravelDegrees(telemetry) : 0;
-  const absBodyAngle = Math.abs(bodyAngleDeg);
-  const frontSlipAngle = average([
-    Math.abs(telemetry?.TireSlipAngleFrontLeft ?? 0),
-    Math.abs(telemetry?.TireSlipAngleFrontRight ?? 0)
-  ]);
-  const rearSlipAngle = average([
-    Math.abs(telemetry?.TireSlipAngleRearLeft ?? 0),
-    Math.abs(telemetry?.TireSlipAngleRearRight ?? 0)
-  ]);
-  const slipAngleBalance = frontSlipAngle - rearSlipAngle;
-  const maxCombinedSlip = Math.max(...tires.map((tire) => tire.combinedSlip), 0);
-  const stateLabel = telemetry
-    ? classifyLiveMfdState(absBodyAngle, maxCombinedSlip, slipAngleBalance, telemetry.throttlePct)
-    : "Waiting";
+function CarDataPanel({ telemetry }: { telemetry: Telemetry | null }) {
+  const frontTravel = telemetry ? average([
+    telemetry.NormalizedSuspensionTravelFrontLeft,
+    telemetry.NormalizedSuspensionTravelFrontRight
+  ]) : undefined;
+  const rearTravel = telemetry ? average([
+    telemetry.NormalizedSuspensionTravelRearLeft,
+    telemetry.NormalizedSuspensionTravelRearRight
+  ]) : undefined;
+  const maxCompression = telemetry ? Math.max(
+    telemetry.NormalizedSuspensionTravelFrontLeft,
+    telemetry.NormalizedSuspensionTravelFrontRight,
+    telemetry.NormalizedSuspensionTravelRearLeft,
+    telemetry.NormalizedSuspensionTravelRearRight
+  ) : undefined;
+  const frontCombinedSlip = telemetry ? average([
+    Math.abs(telemetry.TireCombinedSlipFrontLeft),
+    Math.abs(telemetry.TireCombinedSlipFrontRight)
+  ]) : undefined;
+  const rearCombinedSlip = telemetry ? average([
+    Math.abs(telemetry.TireCombinedSlipRearLeft),
+    Math.abs(telemetry.TireCombinedSlipRearRight)
+  ]) : undefined;
+  const frontSlipAngle = telemetry ? frontTireSlipAngle(telemetry) : undefined;
+  const rearSlipAngle = telemetry ? rearTireSlipAngle(telemetry) : undefined;
+  const tireTempDelta = telemetry ? telemetry.frontTemp - telemetry.rearTemp : undefined;
+  const lateralG = telemetry ? telemetry.AccelerationX / 9.81 : undefined;
+  const longitudinalG = telemetry ? telemetry.AccelerationZ / 9.81 : undefined;
+  const yawRateDeg = telemetry ? radiansToDegrees(telemetry.AngularVelocityY) : undefined;
 
   return (
     <div className="grid gap-[18px]">
-      <TelemetryGroup title="Live tire MFD" icon={<Gauge size={18} />}>
-        <div className="overflow-hidden rounded-lg border border-white/10 bg-[#070a09]/70 p-4">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className={`${labelClass} mb-1`}>Travel direction</p>
-              <div className="flex items-center gap-2 text-sm font-bold text-[#f5f7f6]">
-                <span className="grid size-7 place-items-center rounded-md border border-[#f3d09b]/30 bg-[#f3d09b]/10 text-[#f3d09b]">↑</span>
-                <span className="truncate">Body angle {formatDegrees(bodyAngleDeg)}</span>
-              </div>
-            </div>
-            <div className={`rounded-md border px-2.5 py-1 text-xs font-bold uppercase tracking-[0.08em] ${mfdStateClass(stateLabel)}`}>
-              {stateLabel}
-            </div>
-          </div>
-
-          <div className="relative mx-auto aspect-[0.82] w-full max-w-[300px]">
-            <div className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-[#f3d09b]/25" />
-            <div className="absolute left-1/2 top-0 flex -translate-x-1/2 flex-col items-center text-[#f3d09b]">
-              <div className="h-0 w-0 border-x-[7px] border-b-[13px] border-x-transparent border-b-[#f3d09b]" />
-              <span className="mt-1 text-[0.62rem] font-bold uppercase tracking-[0.12em]">travel</span>
-            </div>
-
-            <div
-              className="absolute inset-[16%_12%] transition-transform duration-200 ease-out"
-              style={{ transform: `rotate(${bodyAngleDeg}deg)` }}
-            >
-              <div className="absolute left-1/2 top-1/2 h-[72%] w-px -translate-x-1/2 -translate-y-1/2 bg-white/10" />
-              {tires.map((tire) => (
-                <TireMfdBlock key={tire.id} tire={tire} />
-              ))}
-            </div>
-          </div>
-        </div>
-
+      <TelemetryGroup title="Tires" icon={<Gauge size={18} />}>
         <dl className="grid grid-cols-2 gap-2.5 xl:grid-cols-4">
-          <MetricCell label="Balance" value={balanceLabel(slipAngleBalance)} tone={slipTone(slipAngleBalance)} />
-          <MetricCell label="Slip angle delta" value={slipAngleBalance} precision={3} tone={slipTone(slipAngleBalance)} />
-          <MetricCell label="Max combined" value={maxCombinedSlip} precision={3} tone={maxCombinedSlip > 0.9 ? "alert" : maxCombinedSlip > 0.65 ? "warn" : "ok"} />
-          <MetricCell label="Samples" value={state.summary?.sampleCount ?? 0} precision={0} />
+          <MetricCell label="FL temp" value={telemetry?.TireTempFrontLeft} suffix="°" precision={0} />
+          <MetricCell label="FR temp" value={telemetry?.TireTempFrontRight} suffix="°" precision={0} />
+          <MetricCell label="RL temp" value={telemetry?.TireTempRearLeft} suffix="°" precision={0} />
+          <MetricCell label="RR temp" value={telemetry?.TireTempRearRight} suffix="°" precision={0} />
+          <MetricCell label="Front slip angle" value={frontSlipAngle} precision={3} />
+          <MetricCell label="Rear slip angle" value={rearSlipAngle} precision={3} />
+          <MetricCell label="Front combined" value={frontCombinedSlip} precision={3} tone={slipAmountTone(frontCombinedSlip)} />
+          <MetricCell label="Rear combined" value={rearCombinedSlip} precision={3} tone={slipAmountTone(rearCombinedSlip)} />
+          <MetricCell label="Temp split" value={temperatureSplitLabel(tireTempDelta)} tone={tireTempDelta === undefined ? "default" : temperatureTone(tireTempDelta)} />
+          <MetricCell label="Front avg temp" value={telemetry?.frontTemp} suffix="°" precision={0} />
+          <MetricCell label="Rear avg temp" value={telemetry?.rearTemp} suffix="°" precision={0} />
+          <MetricCell label="Temp delta" value={tireTempDelta} suffix="°" precision={0} tone={tireTempDelta === undefined ? "default" : temperatureTone(tireTempDelta)} />
+        </dl>
+      </TelemetryGroup>
+
+      <TelemetryGroup title="Suspension" icon={<Activity size={18} />}>
+        <dl className="grid grid-cols-2 gap-2.5 xl:grid-cols-4">
+          <MetricCell label="FL travel" value={telemetry?.NormalizedSuspensionTravelFrontLeft} precision={3} tone={compressionTone(telemetry?.NormalizedSuspensionTravelFrontLeft)} />
+          <MetricCell label="FR travel" value={telemetry?.NormalizedSuspensionTravelFrontRight} precision={3} tone={compressionTone(telemetry?.NormalizedSuspensionTravelFrontRight)} />
+          <MetricCell label="RL travel" value={telemetry?.NormalizedSuspensionTravelRearLeft} precision={3} tone={compressionTone(telemetry?.NormalizedSuspensionTravelRearLeft)} />
+          <MetricCell label="RR travel" value={telemetry?.NormalizedSuspensionTravelRearRight} precision={3} tone={compressionTone(telemetry?.NormalizedSuspensionTravelRearRight)} />
+          <MetricCell label="Front avg" value={frontTravel} precision={3} tone={compressionTone(frontTravel)} />
+          <MetricCell label="Rear avg" value={rearTravel} precision={3} tone={compressionTone(rearTravel)} />
+          <MetricCell label="Max compression" value={maxCompression} precision={3} tone={compressionTone(maxCompression)} />
+          <MetricCell label="Travel split" value={frontTravel !== undefined && rearTravel !== undefined ? frontTravel - rearTravel : undefined} precision={3} />
+        </dl>
+      </TelemetryGroup>
+
+      <TelemetryGroup title="Load and motion" icon={<Activity size={18} />}>
+        <dl className="grid grid-cols-2 gap-2.5 xl:grid-cols-4">
+          <MetricCell label="Speed" value={telemetry?.speedKmh} suffix=" km/h" precision={0} />
+          <MetricCell label="Lateral G" value={lateralG} precision={2} />
+          <MetricCell label="Longitudinal G" value={longitudinalG} precision={2} />
+          <MetricCell label="Yaw rate" value={yawRateDeg} suffix="°/s" precision={0} />
+          <MetricCell label="Pitch" value={telemetry ? radiansToDegrees(telemetry.Pitch) : undefined} suffix="°" precision={1} />
+          <MetricCell label="Roll" value={telemetry ? radiansToDegrees(telemetry.Roll) : undefined} suffix="°" precision={1} />
+          <MetricCell label="Steer" value={telemetry?.steerPct} suffix="%" precision={0} />
+        </dl>
+      </TelemetryGroup>
+
+      <TelemetryGroup title="Powertrain and inputs" icon={<Gauge size={18} />}>
+        <dl className="grid grid-cols-2 gap-2.5 xl:grid-cols-4">
+          <MetricCell label="Gear" value={formatGear(telemetry?.Gear)} />
+          <MetricCell label="Drivetrain" value={drivetrainLabel(telemetry?.DrivetrainType)} />
+          <MetricCell label="Throttle" value={telemetry?.throttlePct} suffix="%" precision={0} />
+          <MetricCell label="Brake" value={telemetry?.brakePct} suffix="%" precision={0} />
+          <MetricCell label="RPM" value={telemetry?.CurrentEngineRpm} precision={0} />
+          <MetricCell label="Power" value={telemetry?.powerHp} suffix=" hp" precision={0} />
+          <MetricCell label="Torque" value={telemetry?.torqueNm} suffix=" Nm" precision={0} />
+          <MetricCell label="Boost" value={telemetry?.Boost} suffix=" psi" precision={1} />
         </dl>
       </TelemetryGroup>
     </div>
@@ -2210,47 +2459,11 @@ function TuningPanel({ telemetry, state }: { telemetry: Telemetry | null; state:
 
 type TireMfdTire = {
   id: string;
-  label: string;
   temp: number;
   slipAngle: number;
   combinedSlip: number;
   steerAngleDeg: number;
-  left: string;
-  top: string;
 };
-
-function TireMfdBlock({ tire }: { tire: TireMfdTire }) {
-  const tempColor = tireTemperatureColor(tire.temp);
-  const slipIntensity = clampNumber(Math.abs(tire.combinedSlip), 0, 1.2) / 1.2;
-  const slipPercent = Math.round(slipIntensity * 100);
-
-  return (
-    <div
-      className="absolute h-[27%] w-[22%] -translate-x-1/2 -translate-y-1/2 rounded-[6px] border border-white/20 bg-[#101614] p-1.5 shadow-[0_10px_22px_rgba(0,0,0,0.28)] transition-colors duration-200"
-      style={{ left: tire.left, top: tire.top }}
-    >
-      <div
-        className="relative flex h-full flex-col justify-between overflow-hidden rounded-[4px] border border-black/30 px-1.5 py-1 text-[#07100d] transition-transform duration-150 ease-out"
-        style={{
-          backgroundColor: tempColor,
-          transform: `rotate(${tire.steerAngleDeg}deg)`
-        }}
-      >
-        <div
-          className="absolute inset-x-0 bottom-0 bg-black/30 transition-[height] duration-200"
-          style={{ height: `${slipPercent}%` }}
-        />
-        <div className="relative flex items-center justify-between gap-1 text-[0.58rem] font-black uppercase tracking-[0.08em]">
-          <span>{tire.label}</span>
-          <span>{Math.round(tire.temp)}°</span>
-        </div>
-        <div className="relative text-[0.55rem] font-black tabular-nums">
-          S {formatValue(tire.combinedSlip, { precision: 2 })}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function buildTireMfdData(telemetry: Telemetry | null): TireMfdTire[] {
   const frontSteerAngle = approximateFrontTireSteerDegrees(telemetry?.steerPct ?? 0);
@@ -2258,43 +2471,31 @@ function buildTireMfdData(telemetry: Telemetry | null): TireMfdTire[] {
   return [
     {
       id: "front-left",
-      label: "FL",
       temp: telemetry?.TireTempFrontLeft ?? 0,
       slipAngle: Math.abs(telemetry?.TireSlipAngleFrontLeft ?? 0),
       combinedSlip: Math.abs(telemetry?.TireCombinedSlipFrontLeft ?? 0),
-      steerAngleDeg: frontSteerAngle,
-      left: "28%",
-      top: "24%"
+      steerAngleDeg: frontSteerAngle
     },
     {
       id: "front-right",
-      label: "FR",
       temp: telemetry?.TireTempFrontRight ?? 0,
       slipAngle: Math.abs(telemetry?.TireSlipAngleFrontRight ?? 0),
       combinedSlip: Math.abs(telemetry?.TireCombinedSlipFrontRight ?? 0),
-      steerAngleDeg: frontSteerAngle,
-      left: "72%",
-      top: "24%"
+      steerAngleDeg: frontSteerAngle
     },
     {
       id: "rear-left",
-      label: "RL",
       temp: telemetry?.TireTempRearLeft ?? 0,
       slipAngle: Math.abs(telemetry?.TireSlipAngleRearLeft ?? 0),
       combinedSlip: Math.abs(telemetry?.TireCombinedSlipRearLeft ?? 0),
-      steerAngleDeg: 0,
-      left: "28%",
-      top: "76%"
+      steerAngleDeg: 0
     },
     {
       id: "rear-right",
-      label: "RR",
       temp: telemetry?.TireTempRearRight ?? 0,
       slipAngle: Math.abs(telemetry?.TireSlipAngleRearRight ?? 0),
       combinedSlip: Math.abs(telemetry?.TireCombinedSlipRearRight ?? 0),
-      steerAngleDeg: 0,
-      left: "72%",
-      top: "76%"
+      steerAngleDeg: 0
     }
   ];
 }
@@ -2315,6 +2516,13 @@ function radiansToDegrees(value: number) {
   return (value * 180) / Math.PI;
 }
 
+function normalizeRadians(angle: number) {
+  let normalized = angle;
+  while (normalized > Math.PI) normalized -= Math.PI * 2;
+  while (normalized < -Math.PI) normalized += Math.PI * 2;
+  return normalized;
+}
+
 function formatDegrees(value: number) {
   const rounded = Math.round(value);
   return `${rounded > 0 ? "+" : ""}${rounded}°`;
@@ -2326,21 +2534,6 @@ function tireTemperatureColor(temp: number) {
   if (temp < 82) return "#63da97";
   if (temp < 102) return "#f3d09b";
   return "#e46645";
-}
-
-function classifyLiveMfdState(bodyAngle: number, combinedSlip: number, slipAngleBalance: number, throttlePct: number) {
-  if (combinedSlip > 1.05 || bodyAngle > 35) return "Unstable";
-  if (throttlePct > 45 && combinedSlip > 0.75) return "Wheelspin";
-  if (Math.abs(slipAngleBalance) > 0.14 || bodyAngle > 12) return "Rotating";
-  return "Stable";
-}
-
-function mfdStateClass(state: string) {
-  if (state === "Unstable") return "border-[#e46645]/40 bg-[#e46645]/10 text-[#ffd1c7]";
-  if (state === "Wheelspin") return "border-[#f7b84b]/40 bg-[#f7b84b]/10 text-[#ffe1a5]";
-  if (state === "Rotating") return "border-[#59a7ff]/35 bg-[#59a7ff]/10 text-[#cfe5ff]";
-  if (state === "Stable") return "border-[#63da97]/35 bg-[#63da97]/10 text-[#d8ffe7]";
-  return "border-white/10 bg-white/[0.035] text-[#b5bfb9]";
 }
 
 function MetricCell({
@@ -2413,9 +2606,19 @@ function TelemetryDashboard({
   );
 }
 
-function TelemetryGroup({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
+function TelemetryGroup({
+  title,
+  icon,
+  children,
+  className = ""
+}: {
+  title: string;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+}) {
   return (
-    <section className="grid gap-3">
+    <section className={`grid gap-3 ${className}`}>
       <SectionTitle icon={icon} compact>{title}</SectionTitle>
       <div className="grid gap-[18px]">
         {children}
@@ -2493,6 +2696,13 @@ function formatSignedPercent(value: number) {
   return `${rounded > 0 ? "+" : ""}${rounded}%`;
 }
 
+function formatGear(value: number | undefined) {
+  if (value === undefined || !Number.isFinite(value)) return "0";
+  if (value === 0) return "R";
+  if (value === 1) return "N";
+  return String(value - 1);
+}
+
 function drivetrainLabel(value: number | undefined) {
   if (value === 0) return "FWD";
   if (value === 1) return "RWD";
@@ -2519,19 +2729,6 @@ function tuningStatusLabel(advice: Advice[]) {
   return "Collecting data";
 }
 
-function slipTone(value: number): "ok" | "warn" | "alert" {
-  const magnitude = Math.abs(value);
-  if (magnitude > 0.3) return "alert";
-  if (magnitude > 0.12) return "warn";
-  return "ok";
-}
-
-function balanceLabel(value: number) {
-  if (value > 0.12) return "Understeer";
-  if (value < -0.12) return "Oversteer";
-  return "Neutral";
-}
-
 function temperatureTone(value: number): "ok" | "warn" | "alert" {
   const magnitude = Math.abs(value);
   if (magnitude > 18) return "alert";
@@ -2539,10 +2736,18 @@ function temperatureTone(value: number): "ok" | "warn" | "alert" {
   return "ok";
 }
 
-function temperatureLabel(value: number) {
+function temperatureSplitLabel(value: number | undefined) {
+  if (value === undefined) return "Even";
   if (value > 10) return "Front hot";
   if (value < -10) return "Rear hot";
   return "Even";
+}
+
+function slipAmountTone(value: number | undefined): "default" | "ok" | "warn" | "alert" {
+  if (value === undefined) return "default";
+  if (value > 0.9) return "alert";
+  if (value > 0.65) return "warn";
+  return "ok";
 }
 
 function compressionTone(value: number | undefined): "default" | "ok" | "warn" | "alert" {

@@ -12,6 +12,7 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
   db.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
+    PRAGMA foreign_keys = ON;
 
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
@@ -99,6 +100,7 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
       car_performance_index AS carPerformanceIndex,
       drivetrain_type AS drivetrainType
     FROM sessions
+    WHERE packet_count > 0
     ORDER BY started_at DESC
   `);
   const getSessionStatement = db.prepare(`
@@ -124,12 +126,23 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
     ORDER BY received_at ASC
     LIMIT ?
   `);
+  const deletePacketsForEmptySessions = db.prepare(`
+    DELETE FROM telemetry_packets
+    WHERE session_id IN (
+      SELECT id
+      FROM sessions
+      WHERE packet_count = 0
+    )
+  `);
+  const deleteEmptySessionsStatement = db.prepare(`
+    DELETE FROM sessions
+    WHERE packet_count = 0
+  `);
 
   return {
     path: dbPath,
 
-    startSession(startedAt = Date.now()) {
-      const id = randomUUID();
+    startSession(startedAt = Date.now(), id = randomUUID()) {
       insertSession.run(id, startedAt, startedAt);
       return { id, startedAt };
     },
@@ -186,6 +199,19 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
       return getSamplesStatement
         .all(sessionId, limit)
         .map((row) => JSON.parse(row.telemetryJson));
+    },
+
+    deleteEmptySessions() {
+      db.exec("BEGIN");
+      try {
+        deletePacketsForEmptySessions.run();
+        const result = deleteEmptySessionsStatement.run();
+        db.exec("COMMIT");
+        return result.changes ?? 0;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
     }
   };
 }

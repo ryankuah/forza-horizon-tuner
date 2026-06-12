@@ -1,5 +1,6 @@
 import dgram from "node:dgram";
 import os from "node:os";
+import { randomUUID } from "node:crypto";
 import express from "express";
 import { WebSocketServer } from "ws";
 import { createTelemetryDatabase } from "./database.js";
@@ -23,7 +24,8 @@ const state = {
 
 let telemetryWindow = new TelemetryWindow();
 const database = createTelemetryDatabase();
-let currentSession = database.startSession();
+const removedEmptySessions = database.deleteEmptySessions();
+let currentSession = createPendingSession();
 const udp = dgram.createSocket("udp4");
 const app = express();
 const wss = new WebSocketServer({ port: WS_PORT });
@@ -88,13 +90,15 @@ udp.on("message", (message, remote) => {
     handleTelemetry({ telemetry, receivedAt, source, rawPacket: message });
   } catch (error) {
     state.badPackets += 1;
-    database.recordBadPacket({
-      sessionId: currentSession.id,
-      receivedAt,
-      source,
-      rawPacket: message,
-      error: error.message
-    });
+    if (currentSession.persisted) {
+      database.recordBadPacket({
+        sessionId: currentSession.id,
+        receivedAt,
+        source,
+        rawPacket: message,
+        error: error.message
+      });
+    }
     console.error(`Failed to parse UDP packet: ${error.message}`);
   }
 });
@@ -160,7 +164,10 @@ function logStartup() {
   console.log("");
   console.log("Forza Horizon Tuner");
   console.log(`Session DB:     ${database.path}`);
-  console.log(`Session ID:     ${currentSession.id}`);
+  console.log(`Session ID:     ${currentSession.id} (pending)`);
+  if (removedEmptySessions > 0) {
+    console.log(`Cleaned empty sessions: ${removedEmptySessions}`);
+  }
   console.log(`UDP telemetry: 0.0.0.0:${UDP_PORT}`);
   console.log(`HTTP status:   http://localhost:${HTTP_PORT}/api/status`);
   console.log(`WebSocket:     ws://localhost:${WS_PORT}`);
@@ -183,8 +190,10 @@ function maybeStartNewSessionForTelemetry(telemetry, receivedAt) {
 }
 
 function startNewSession(reason, startedAt = Date.now()) {
-  database.endSession(currentSession.id, startedAt);
-  currentSession = database.startSession(startedAt);
+  if (currentSession.persisted) {
+    database.endSession(currentSession.id, startedAt);
+  }
+  currentSession = createPendingSession(startedAt);
   telemetryWindow = new TelemetryWindow();
   state.connected = false;
   state.packets = 0;
@@ -194,7 +203,24 @@ function startNewSession(reason, startedAt = Date.now()) {
   state.last = null;
   state.summary = null;
   state.advice = buildTuningAdvice(null, null);
-  console.log(`Started telemetry session ${currentSession.id} (${reason})`);
+  console.log(`Prepared telemetry session ${currentSession.id} (${reason})`);
+}
+
+function createPendingSession(startedAt = Date.now()) {
+  return {
+    id: randomUUID(),
+    startedAt,
+    persisted: false
+  };
+}
+
+function ensureCurrentSession(receivedAt) {
+  if (!currentSession.persisted) {
+    database.startSession(currentSession.startedAt, currentSession.id);
+    currentSession.persisted = true;
+    console.log(`Started telemetry session ${currentSession.id}`);
+  }
+  return currentSession;
 }
 
 function carIdentityChanged(previous, telemetry) {
@@ -219,8 +245,9 @@ function handleTelemetry({ telemetry, receivedAt, source, rawPacket = null }) {
   telemetryWindow.add(telemetry);
   state.summary = telemetryWindow.summary();
   state.advice = buildTuningAdvice(state.last, state.summary);
+  const session = ensureCurrentSession(receivedAt);
   database.recordValidPacket({
-    sessionId: currentSession.id,
+    sessionId: session.id,
     receivedAt,
     source,
     rawPacket,
