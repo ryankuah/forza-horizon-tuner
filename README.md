@@ -147,6 +147,16 @@ mapY = PositionZ * -0.13158 + 1321.0827332
 
 Packaging scripts rebuild `better-sqlite3` for the target Electron version before creating artifacts.
 
+macOS releases must be signed and notarized to open normally after download. The release workflow requires these GitHub repository secrets before it creates release artifacts:
+
+- `MAC_CERTIFICATE`: base64-encoded Developer ID Application certificate, exported as a `.p12`
+- `MAC_CERTIFICATE_PASSWORD`: password for the exported certificate
+- `APPLE_ID`: Apple Developer account email
+- `APPLE_APP_SPECIFIC_PASSWORD`: app-specific password for notarization
+- `APPLE_TEAM_ID`: Apple Developer Team ID
+
+Without those secrets, the release workflow fails before creating a release because unsigned macOS downloads are blocked by Gatekeeper as damaged.
+
 To create a tagged release:
 
 ```bash

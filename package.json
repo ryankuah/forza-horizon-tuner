@@ -29,6 +29,7 @@
   "build": {
     "appId": "com.ryankuah.forzahorizontuner",
     "productName": "Forza Horizon Tuner",
+    "afterSign": "scripts/notarize.cjs",
     "directories": {
       "output": "release"
     },
@@ -50,6 +51,8 @@
     ],
     "mac": {
       "category": "public.app-category.utilities",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
       "target": [
         "dmg",
         "zip"
@@ -85,6 +88,7 @@
     "vite": "^7.2.7"
   },
   "devDependencies": {
+    "@electron/notarize": "^2.5.0",
     "@tailwindcss/vite": "^4.3.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.9.3",
