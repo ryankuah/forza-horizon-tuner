@@ -6,6 +6,10 @@ release/
 
 data/*.sqlite
 data/*.sqlite*
+!data/fh6-cars.sqlite
+data/fh6-cars.json
+data/fh6-cars.csv
+data/fh6-cars-missing.json
 
 artifacts/
 

@@ -2,11 +2,13 @@ import { app, BrowserWindow, dialog, ipcMain, shell, type MessageBoxOptions } fr
 import { autoUpdater } from "electron-updater";
 import fs from "node:fs";
 import path from "node:path";
+import { createCarCatalog } from "../server/carCatalog";
 import { createTelemetryRuntime } from "../server/runtime";
-import type { AppState } from "../src/types/telemetry";
+import type { AppState, CarCatalogQuery } from "../src/types/telemetry";
 
 let mainWindow: BrowserWindow | null = null;
 let runtime: ReturnType<typeof createTelemetryRuntime> | null = null;
+let carCatalog: ReturnType<typeof createCarCatalog> | null = null;
 let isInstallingUpdate = false;
 
 function rendererEntry() {
@@ -22,6 +24,15 @@ function appIconPath() {
   return candidates.find((candidate) => fs.existsSync(candidate));
 }
 
+function carCatalogPath() {
+  const candidates = [
+    path.join(__dirname, "..", "data", "fh6-cars.sqlite"),
+    path.join(process.resourcesPath, "data", "fh6-cars.sqlite")
+  ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0];
+}
+
 function startTelemetryRuntime() {
   runtime = createTelemetryRuntime({
     dbPath: path.join(app.getPath("userData"), "telemetry.sqlite")
@@ -33,10 +44,16 @@ function startTelemetryRuntime() {
   runtime.logStartup();
 }
 
+function startCarCatalog() {
+  carCatalog = createCarCatalog(carCatalogPath());
+}
+
 function setupTelemetryIpc() {
   ipcMain.handle("telemetry:snapshot", () => runtime?.snapshot());
+  ipcMain.handle("telemetry:set-udp-listening", (_event, isListening: boolean) => runtime?.setUdpListening(isListening));
   ipcMain.handle("telemetry:sessions", () => runtime?.listSessions().sessions ?? []);
   ipcMain.handle("telemetry:run-detail", (_event, runId: string) => runtime?.getRunDetail(runId) ?? null);
+  ipcMain.handle("cars:query", (_event, query: CarCatalogQuery) => carCatalog?.queryCars(query) ?? { cars: [], total: 0, matched: 0 });
 }
 
 async function createMainWindow() {
@@ -128,6 +145,7 @@ async function promptToInstallUpdate() {
 app.whenReady().then(async () => {
   setupAutoUpdates();
   setupTelemetryIpc();
+  startCarCatalog();
   startTelemetryRuntime();
   await createMainWindow();
 
@@ -144,6 +162,7 @@ app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
   if (!isInstallingUpdate) runtime?.stop();
+  carCatalog?.close();
 });
 
 app.on("window-all-closed", () => {

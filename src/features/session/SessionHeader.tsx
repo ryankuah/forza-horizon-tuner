@@ -1,10 +1,10 @@
 import * as React from "react";
-import { Car, Check, ChevronDown, ChevronRight, Clock, PanelLeftClose, PanelLeftOpen, Radio } from "lucide-react";
+import { Car, Check, ChevronDown, ChevronRight, Clock, Gauge, PanelLeftClose, PanelLeftOpen, Radio, RadioReceiver } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { drivetrainLabel, shortSessionId } from "@/lib/format";
-import type { RunSelection, RunSummary, SessionSummary, SessionWithRuns, Telemetry } from "@/types/telemetry";
+import type { CarCatalogItem, RunSelection, RunSummary, SessionSummary, SessionWithRuns, Telemetry } from "@/types/telemetry";
 
 function formatSessionTime(value: number | null | undefined) {
   if (!value) return "No packets";
@@ -16,12 +16,32 @@ function formatSessionTime(value: number | null | undefined) {
   });
 }
 
-function formatCar(run: Pick<RunSummary, "carOrdinal" | "carClass" | "carPerformanceIndex" | "drivetrainType">) {
-  const carId = run.carOrdinal === null || run.carOrdinal === undefined ? "Unknown car" : `Car ${run.carOrdinal}`;
-  const classLabel = run.carClass === null || run.carClass === undefined ? null : `Class ${run.carClass}`;
+function carClassLabel(value: number | null | undefined) {
+  if (value === 0) return "D";
+  if (value === 1) return "C";
+  if (value === 2) return "B";
+  if (value === 3) return "A";
+  if (value === 4) return "S1";
+  if (value === 5) return "S2";
+  if (value === 6) return "X";
+  return null;
+}
+
+function formatCar(
+  run: Pick<RunSummary, "carOrdinal" | "carClass" | "carPerformanceIndex" | "drivetrainType">,
+  carCatalogByOrdinal: Map<number, CarCatalogItem>
+) {
+  const catalogCar = run.carOrdinal === null || run.carOrdinal === undefined
+    ? null
+    : carCatalogByOrdinal.get(run.carOrdinal) ?? null;
+  const carName = catalogCar?.carName ?? "Unknown car";
+  const className = carClassLabel(run.carClass) ?? catalogCar?.carClass ?? null;
   const piLabel = run.carPerformanceIndex === null || run.carPerformanceIndex === undefined ? null : `PI ${run.carPerformanceIndex}`;
+  const classLabel = className && run.carPerformanceIndex !== null && run.carPerformanceIndex !== undefined
+    ? `${className} ${run.carPerformanceIndex}`
+    : className;
   const drivetrain = run.drivetrainType === null || run.drivetrainType === undefined ? null : drivetrainLabel(run.drivetrainType);
-  return [carId, classLabel, piLabel, drivetrain].filter(Boolean).join(" / ");
+  return [carName, classLabel ?? piLabel, drivetrain].filter(Boolean).join(" / ");
 }
 
 function formatDuration(item: Pick<SessionSummary | RunSummary, "startedAt" | "endedAt" | "lastPacketAt">) {
@@ -46,6 +66,8 @@ function splitReasonLabel(reason: string | null | undefined) {
 
 export function SessionHeader({
   sessions,
+  carCatalogByOrdinal,
+  activePage,
   selectedRunId,
   canSelectLive,
   liveSessionId,
@@ -54,11 +76,22 @@ export function SessionHeader({
   livePackets,
   liveBadPackets,
   liveLastPacketAt,
+  statusLabel,
+  statusConnected,
+  statusPackets,
+  statusUdpPort,
+  udpListening,
+  isTogglingUdpListening,
+  statusRunId,
   isCollapsed,
   onCollapsedChange,
-  onRunChange
+  onPageChange,
+  onRunChange,
+  onToggleUdpListening
 }: {
   sessions: SessionWithRuns[];
+  carCatalogByOrdinal: Map<number, CarCatalogItem>;
+  activePage: "sessions" | "cars";
   selectedRunId: RunSelection;
   canSelectLive: boolean;
   liveSessionId?: string;
@@ -67,9 +100,18 @@ export function SessionHeader({
   livePackets?: number;
   liveBadPackets?: number;
   liveLastPacketAt?: number | null;
+  statusLabel: string;
+  statusConnected: boolean;
+  statusPackets: number;
+  statusUdpPort: number;
+  udpListening: boolean;
+  isTogglingUdpListening: boolean;
+  statusRunId?: string;
   isCollapsed: boolean;
   onCollapsedChange: (isCollapsed: boolean) => void;
+  onPageChange: (page: "sessions" | "cars") => void;
   onRunChange: (runId: RunSelection) => void;
+  onToggleUdpListening: () => void;
 }) {
   const selectedValue = canSelectLive
     ? selectedRunId
@@ -86,24 +128,27 @@ export function SessionHeader({
     <aside
       className={cn(
         "flex h-screen shrink-0 flex-col border-r border-white/10 bg-[#242424] text-[#e7e7e7] transition-[width] duration-200 ease-out",
-        isCollapsed ? "w-[68px]" : "w-[316px]"
+        isCollapsed ? "w-[132px]" : "w-[316px]"
       )}
       aria-label="Sessions"
     >
       <div className="flex h-[62px] shrink-0 items-center justify-end px-3 [-webkit-app-region:drag]">
-        {!isCollapsed ? (
-          <Button
-            className="text-[#b6b6b6] hover:bg-white/10 hover:text-white [-webkit-app-region:no-drag]"
-            variant="ghost"
-            size="icon"
-            type="button"
-            onClick={() => onCollapsedChange(true)}
-            aria-label="Collapse sidebar"
-          >
-            <PanelLeftClose size={18} />
-          </Button>
-        ) : null}
+        <Button
+          className={cn(
+            "text-[#b6b6b6] hover:bg-white/10 hover:text-white [-webkit-app-region:no-drag]",
+            isCollapsed && "-translate-y-1.5"
+          )}
+          variant="ghost"
+          size="icon"
+          type="button"
+          onClick={() => onCollapsedChange(!isCollapsed)}
+          aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          {isCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={18} />}
+        </Button>
       </div>
+
+      <SidebarPageNav activePage={activePage} isCollapsed={isCollapsed} onPageChange={onPageChange} />
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
         {isCollapsed ? (
@@ -111,7 +156,6 @@ export function SessionHeader({
             sessions={sessions}
             selectedValue={selectedValue}
             canSelectLive={canSelectLive}
-            onExpand={() => onCollapsedChange(false)}
             onRunChange={selectRun}
           />
         ) : (
@@ -125,11 +169,145 @@ export function SessionHeader({
             livePackets={livePackets}
             liveBadPackets={liveBadPackets}
             liveLastPacketAt={liveLastPacketAt}
+            carCatalogByOrdinal={carCatalogByOrdinal}
             onRunChange={selectRun}
           />
         )}
       </div>
+
+      <SidebarStatusFooter
+        isCollapsed={isCollapsed}
+        label={statusLabel}
+        connected={statusConnected}
+        packets={statusPackets}
+        udpPort={statusUdpPort}
+        udpListening={udpListening}
+        isTogglingUdpListening={isTogglingUdpListening}
+        runId={statusRunId}
+        onToggleUdpListening={onToggleUdpListening}
+      />
     </aside>
+  );
+}
+
+function SidebarPageNav({
+  activePage,
+  isCollapsed,
+  onPageChange
+}: {
+  activePage: "sessions" | "cars";
+  isCollapsed: boolean;
+  onPageChange: (page: "sessions" | "cars") => void;
+}) {
+  return (
+    <nav className={cn("shrink-0 px-2 pb-4", isCollapsed && "px-3")} aria-label="Primary pages">
+      <div className="grid gap-1">
+        <button
+          className={cn(
+            "flex h-10 items-center rounded-lg text-sm font-medium transition",
+            isCollapsed ? "justify-center px-0" : "justify-start gap-3 px-3",
+            activePage === "cars"
+              ? "bg-white/10 text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]"
+              : "text-[#b8b8b8] hover:bg-white/8 hover:text-[#ededed]"
+          )}
+          type="button"
+          onClick={() => onPageChange("cars")}
+          aria-current={activePage === "cars" ? "page" : undefined}
+          aria-label="Cars"
+          title="Cars"
+        >
+          <Gauge size={18} />
+          {!isCollapsed ? <span>Cars</span> : null}
+        </button>
+      </div>
+    </nav>
+  );
+}
+
+function SidebarStatusFooter({
+  isCollapsed,
+  label,
+  connected,
+  packets,
+  udpPort,
+  udpListening,
+  isTogglingUdpListening,
+  runId,
+  onToggleUdpListening
+}: {
+  isCollapsed: boolean;
+  label: string;
+  connected: boolean;
+  packets: number;
+  udpPort: number;
+  udpListening: boolean;
+  isTogglingUdpListening: boolean;
+  runId?: string;
+  onToggleUdpListening: () => void;
+}) {
+  const listenerLabel = udpListening ? "Listening" : "Paused";
+
+  return (
+    <div className="shrink-0 border-t border-white/10 px-3 py-3">
+      {isCollapsed ? (
+        <div className="grid justify-items-center gap-2 text-center">
+          <Button
+            className={cn(
+              "size-9 border-white/10 text-[#d8d8d8] hover:bg-white/10 hover:text-white",
+              udpListening ? "bg-[#4cc38a]/15 text-[#70e0a6]" : "bg-white/[0.04]"
+            )}
+            variant="outline"
+            size="icon"
+            type="button"
+            disabled={isTogglingUdpListening}
+            onClick={onToggleUdpListening}
+            aria-pressed={udpListening}
+            aria-label={udpListening ? `Stop listening on UDP ${udpPort}` : `Start listening on UDP ${udpPort}`}
+            title={udpListening ? `Stop UDP ${udpPort}` : `Listen on UDP ${udpPort}`}
+          >
+            <RadioReceiver size={16} />
+          </Button>
+          <div
+            className={cn("h-2 w-2 rounded-full", connected ? "bg-[#70e0a6]" : udpListening ? "bg-[#d4a94f]" : "bg-[#8f8f8f]")}
+            title={connected ? "Connected" : listenerLabel}
+          />
+          <div className="max-w-full truncate font-mono text-[10px] text-[#8f8f8f]">
+            {runId ? shortSessionId(runId) : "No run"}
+          </div>
+        </div>
+      ) : (
+        <div className="grid gap-2">
+          <div className="flex min-w-0 items-center justify-between gap-3">
+            <div className="truncate text-[13px] font-medium text-[#ededed]">{label}</div>
+            <div className="shrink-0 font-mono text-xs text-[#8f8f8f]">{runId ? shortSessionId(runId) : "No run"}</div>
+          </div>
+          <div className="flex min-w-0 items-center gap-2 text-xs text-[#8f8f8f]">
+            <span>{connected ? "Connected" : "Idle"}</span>
+            <span className="text-[#555]">/</span>
+            <span>{packets.toLocaleString()} packets</span>
+            <span className="text-[#555]">/</span>
+            <span>UDP {udpPort}</span>
+          </div>
+          <Button
+            className={cn(
+              "h-8 w-full justify-start border-white/10 px-2.5 text-xs",
+              udpListening
+                ? "bg-[#4cc38a]/15 text-[#70e0a6] hover:bg-[#4cc38a]/20 hover:text-[#8af0b8]"
+                : "bg-white/[0.04] text-[#cfcfcf] hover:bg-white/10 hover:text-white"
+            )}
+            variant="outline"
+            size="sm"
+            type="button"
+            disabled={isTogglingUdpListening}
+            onClick={onToggleUdpListening}
+            aria-pressed={udpListening}
+          >
+            <RadioReceiver size={14} />
+            <span>{udpListening ? "Stop listening" : "Listen on UDP"}</span>
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -143,6 +321,7 @@ function ExpandedSessions({
   livePackets,
   liveBadPackets,
   liveLastPacketAt,
+  carCatalogByOrdinal,
   onRunChange
 }: {
   sessions: SessionWithRuns[];
@@ -154,6 +333,7 @@ function ExpandedSessions({
   livePackets?: number;
   liveBadPackets?: number;
   liveLastPacketAt?: number | null;
+  carCatalogByOrdinal: Map<number, CarCatalogItem>;
   onRunChange: (runId: RunSelection | "__none") => void;
 }) {
   const [expandedSessionIds, setExpandedSessionIds] = React.useState<Set<string>>(() => new Set(sessions.slice(0, 2).map(({ session }) => session.id)));
@@ -214,7 +394,7 @@ function ExpandedSessions({
                   carClass: liveTelemetry.CarClass,
                   carPerformanceIndex: liveTelemetry.CarPerformanceIndex,
                   drivetrainType: liveTelemetry.DrivetrainType
-                })
+                }, carCatalogByOrdinal)
                 : "No car telemetry"}
             </div>
           </button>
@@ -263,6 +443,7 @@ function ExpandedSessions({
                       run={run}
                       index={runs.length - index}
                       isSelected={selectedValue === run.id}
+                      carCatalogByOrdinal={carCatalogByOrdinal}
                       onSelect={() => onRunChange(run.id)}
                     />
                   ))}
@@ -284,11 +465,13 @@ function RunButton({
   run,
   index,
   isSelected,
+  carCatalogByOrdinal,
   onSelect
 }: {
   run: RunSummary;
   index: number;
   isSelected: boolean;
+  carCatalogByOrdinal: Map<number, CarCatalogItem>;
   onSelect: () => void;
 }) {
   return (
@@ -306,7 +489,7 @@ function RunButton({
       </div>
       <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-[#8f8f8f]">
         <Car size={13} />
-        <span className="truncate">{formatCar(run)}</span>
+        <span className="truncate">{formatCar(run, carCatalogByOrdinal)}</span>
       </div>
       <div className="mt-2 flex items-center gap-3 text-xs text-[#8f8f8f]">
         <span>{run.packetCount.toLocaleString()} pkt</span>
@@ -325,29 +508,17 @@ function CollapsedSessions({
   sessions,
   selectedValue,
   canSelectLive,
-  onExpand,
   onRunChange
 }: {
   sessions: SessionWithRuns[];
   selectedValue: RunSelection | "__none";
   canSelectLive: boolean;
-  onExpand: () => void;
   onRunChange: (runId: RunSelection | "__none") => void;
 }) {
   const visibleRuns = sessions.flatMap(({ runs }) => runs).slice(0, 10);
 
   return (
     <div className="flex flex-col items-center gap-2">
-      <Button
-        className="size-10 text-[#b6b6b6] hover:bg-white/10 hover:text-white"
-        variant="ghost"
-        size="icon"
-        type="button"
-        onClick={onExpand}
-        aria-label="Expand sidebar"
-      >
-        <PanelLeftOpen size={17} />
-      </Button>
       {canSelectLive ? (
         <button
           className={cn(

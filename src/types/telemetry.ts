@@ -139,6 +139,7 @@ export type AppState = {
   telemetry: Telemetry | null;
   summary: Summary | null;
   udpPort: number;
+  udpListening: boolean;
   sessionId?: string;
   runId?: string;
 };
@@ -246,6 +247,64 @@ export type RunDetail = {
   summary: Summary | null;
 };
 export type SessionDetail = RunDetail;
+export type CarCatalogSortKey =
+  | "make"
+  | "year"
+  | "carName"
+  | "carClass"
+  | "pi"
+  | "carOrdinal"
+  | "powerHp"
+  | "weightLb"
+  | "popularityPercent";
+export type CarCatalogSortDirection = "asc" | "desc";
+export type CarCatalogQuery = {
+  search?: string;
+  sortBy?: CarCatalogSortKey;
+  sortDirection?: CarCatalogSortDirection;
+};
+export type CarCatalogItem = {
+  id: string;
+  sourceIndex: number;
+  make: string;
+  year: number | null;
+  carName: string;
+  model: string | null;
+  carType: string | null;
+  carClass: string | null;
+  pi: number | null;
+  country: string | null;
+  collection: string[];
+  addOns: string[];
+  rarity: string | null;
+  credits: number | null;
+  unlock: string | null;
+  popularityPercent: number | null;
+  speed: number | null;
+  handling: number | null;
+  acceleration: number | null;
+  launch: number | null;
+  braking: number | null;
+  offroad: number | null;
+  powerHp: number | null;
+  torqueLbFt: number | null;
+  weightLb: number | null;
+  frontPercent: number | null;
+  displacementLiters: number | null;
+  drive: number | null;
+  carOrdinal: number | null;
+  carOrdinalAsset: string | null;
+  carOrdinalInternalPath: string | null;
+  carOrdinalMatchConfidence: string | null;
+  iconUrl: string | null;
+  detailUrl: string | null;
+  manufacturerLogoUrl: string | null;
+};
+export type CarCatalogResult = {
+  cars: CarCatalogItem[];
+  total: number;
+  matched: number;
+};
 export type DocTelemetryField = {
   name: TelemetryFieldName;
   label: string;
@@ -268,5 +327,6 @@ export const emptyState: AppState = {
   advice: [],
   telemetry: null,
   summary: null,
-  udpPort: 9999
+  udpPort: 9999,
+  udpListening: false
 };
