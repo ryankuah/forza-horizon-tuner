@@ -1,7 +1,8 @@
 import type { CalibrationTransform, PathSample, SvgPoint, SvgViewBox, Telemetry } from "@/types/telemetry";
 import { clampNumber } from "@/lib/math";
+import mapImageUrl from "../../../public/fh6-map-reveal.jpg";
 
-export const MAP_IMAGE_URL = "/fh6-map-reveal.jpg";
+export const MAP_IMAGE_URL = mapImageUrl;
 export const MAP_IMAGE_WIDTH = 2160;
 export const MAP_IMAGE_HEIGHT = 2700;
 export const CAR_FOLLOW_MAP_ZOOM = 8;

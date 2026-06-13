@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell, type MessageBoxOptions } from "electron";
 import { autoUpdater } from "electron-updater";
 import fs from "node:fs";
 import path from "node:path";
@@ -7,6 +7,7 @@ import type { AppState } from "../src/types/telemetry";
 
 let mainWindow: BrowserWindow | null = null;
 let runtime: ReturnType<typeof createTelemetryRuntime> | null = null;
+let isInstallingUpdate = false;
 
 function rendererEntry() {
   return `file://${path.join(__dirname, "..", "dist", "index.html")}`;
@@ -86,6 +87,7 @@ function setupAutoUpdates() {
   });
   autoUpdater.on("update-downloaded", () => {
     mainWindow?.webContents.send("update:downloaded");
+    void promptToInstallUpdate();
   });
 
   ipcMain.handle("app:check-for-updates", async () => {
@@ -101,6 +103,26 @@ function setupAutoUpdates() {
 
 function canCheckForUpdates() {
   return app.isPackaged && fs.existsSync(path.join(process.resourcesPath, "app-update.yml"));
+}
+
+async function promptToInstallUpdate() {
+  const options: MessageBoxOptions = {
+    type: "info",
+    buttons: ["Restart now", "Later"],
+    defaultId: 0,
+    cancelId: 1,
+    message: "A Forza Horizon Tuner update is ready.",
+    detail: "Restart the app to install the update."
+  };
+  const result = mainWindow
+    ? await dialog.showMessageBox(mainWindow, options)
+    : await dialog.showMessageBox(options);
+
+  if (result.response !== 0) return;
+
+  isInstallingUpdate = true;
+  runtime?.stop();
+  autoUpdater.quitAndInstall(false, true);
 }
 
 app.whenReady().then(async () => {
@@ -121,7 +143,7 @@ app.whenReady().then(async () => {
 });
 
 app.on("before-quit", () => {
-  runtime?.stop();
+  if (!isInstallingUpdate) runtime?.stop();
 });
 
 app.on("window-all-closed", () => {
