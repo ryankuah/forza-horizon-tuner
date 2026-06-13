@@ -135,6 +135,54 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
+      - name: Align updater asset names
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+
+          const releaseDir = path.resolve("release");
+          const metadataFiles = ["latest.yml", "latest-mac.yml", "latest-linux.yml"]
+            .map((file) => path.join(releaseDir, file))
+            .filter((file) => fs.existsSync(file));
+
+          function candidateNames(name) {
+            const names = new Set();
+            names.add(name);
+            names.add(name.replace(/^Forza-Horizon-Tuner-Setup-/, "Forza.Horizon.Tuner.Setup."));
+            names.add(name.replace(/^Forza-Horizon-Tuner-/, "Forza.Horizon.Tuner-"));
+            return [...names];
+          }
+
+          function ensureAssetName(expectedName) {
+            const expectedPath = path.join(releaseDir, expectedName);
+            if (fs.existsSync(expectedPath)) return;
+
+            const actualName = candidateNames(expectedName).find((name) => fs.existsSync(path.join(releaseDir, name)));
+            if (!actualName) {
+              throw new Error(`Updater metadata references missing asset: ${expectedName}`);
+            }
+
+            fs.renameSync(path.join(releaseDir, actualName), expectedPath);
+            console.log(`Renamed ${actualName} -> ${expectedName}`);
+          }
+
+          for (const metadataFile of metadataFiles) {
+            const metadata = fs.readFileSync(metadataFile, "utf8");
+            const referencedNames = [...metadata.matchAll(/^\s*(?:url|path):\s+(.+?)\s*$/gm)]
+              .map((match) => match[1].trim().replace(/^['"]|['"]$/g, ""));
+
+            for (const referencedName of referencedNames) {
+              ensureAssetName(referencedName);
+              const blockmapName = `${referencedName}.blockmap`;
+              if (candidateNames(blockmapName).some((name) => fs.existsSync(path.join(releaseDir, name)))) {
+                ensureAssetName(blockmapName);
+              }
+            }
+          }
+          NODE
+
       - name: Upload artifacts to GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
