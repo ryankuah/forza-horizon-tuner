@@ -1,5 +1,5 @@
 import * as React from "react";
-import { ChevronsLeft, ChevronsRight, Minus, Pause, Play, Plus, RotateCcw } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, Minus, Pause, Play, Plus, Radio, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export function MapControls({
@@ -12,9 +12,11 @@ export function MapControls({
   playbackSpeed,
   canDecreasePlaybackSpeed,
   canIncreasePlaybackSpeed,
+  canReturnToLive,
   onTogglePlayback,
   onDecreasePlaybackSpeed,
   onIncreasePlaybackSpeed,
+  onReturnToLive,
   onZoomIn,
   onZoomOut,
   onReset
@@ -28,9 +30,11 @@ export function MapControls({
   playbackSpeed: number;
   canDecreasePlaybackSpeed: boolean;
   canIncreasePlaybackSpeed: boolean;
+  canReturnToLive: boolean;
   onTogglePlayback: () => void;
   onDecreasePlaybackSpeed: () => void;
   onIncreasePlaybackSpeed: () => void;
+  onReturnToLive: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onReset: () => void;
@@ -68,6 +72,16 @@ export function MapControls({
       <span className="min-w-24 border-r border-border px-2 text-center text-[11px] font-bold tabular-nums text-[#c7d0cb]">
         {playbackLabel}
       </span>
+      {canReturnToLive ? (
+        <Button type="button" variant="ghost" size="icon" className="h-9 w-9 rounded-none border-r border-border text-[#70e0a6]"
+          onClick={(event) => {
+            stopControlEvent(event);
+            onReturnToLive();
+          }}
+          aria-label="Return to live telemetry"
+          title="Return to live telemetry"
+        ><Radio size={15} strokeWidth={2.4} /></Button>
+      ) : null}
       <Button type="button" variant="ghost" size="icon" className="h-9 w-9 rounded-none border-r border-border"
         onClick={(event) => {
           stopControlEvent(event);

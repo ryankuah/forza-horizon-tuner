@@ -75,7 +75,7 @@ function createSchema(sqlite: BetterSqliteDatabase.Database) {
 
     CREATE TABLE IF NOT EXISTS telemetry_packets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      session_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
       received_at INTEGER NOT NULL,
       source TEXT,
       parse_ok INTEGER NOT NULL,
@@ -123,6 +123,83 @@ function createSchema(sqlite: BetterSqliteDatabase.Database) {
     SET session_id = id,
         split_reason = COALESCE(split_reason, 'legacy')
     WHERE session_id IS NULL;
+  `);
+
+  migrateTelemetryPacketsToRunReferences(sqlite);
+}
+
+function migrateTelemetryPacketsToRunReferences(sqlite: BetterSqliteDatabase.Database) {
+  const foreignKeys = sqlite.prepare("PRAGMA foreign_key_list(telemetry_packets)").all() as { table: string; from: string }[];
+  const alreadyReferencesRuns = foreignKeys.some((foreignKey) => foreignKey.from === "session_id" && foreignKey.table === "runs");
+  if (alreadyReferencesRuns) return;
+
+  sqlite.exec(`
+    PRAGMA foreign_keys = OFF;
+
+    DROP TABLE IF EXISTS telemetry_packets_run_refs;
+
+    CREATE TABLE telemetry_packets_run_refs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      received_at INTEGER NOT NULL,
+      source TEXT,
+      parse_ok INTEGER NOT NULL,
+      raw_packet BLOB,
+      raw_packet_size INTEGER NOT NULL,
+      telemetry_json TEXT,
+      parse_error TEXT
+    );
+
+    INSERT INTO telemetry_packets_run_refs (
+      id,
+      session_id,
+      received_at,
+      source,
+      parse_ok,
+      raw_packet,
+      raw_packet_size,
+      telemetry_json,
+      parse_error
+    )
+    SELECT
+      packet.id,
+      COALESCE(
+        matching_run.id,
+        (
+          SELECT fallback_run.id
+          FROM runs fallback_run
+          WHERE fallback_run.session_id = packet.session_id
+          ORDER BY fallback_run.started_at
+          LIMIT 1
+        )
+      ),
+      packet.received_at,
+      packet.source,
+      packet.parse_ok,
+      packet.raw_packet,
+      packet.raw_packet_size,
+      packet.telemetry_json,
+      packet.parse_error
+    FROM telemetry_packets packet
+    LEFT JOIN runs matching_run ON matching_run.id = packet.session_id
+    WHERE COALESCE(
+      matching_run.id,
+      (
+        SELECT fallback_run.id
+        FROM runs fallback_run
+        WHERE fallback_run.session_id = packet.session_id
+        ORDER BY fallback_run.started_at
+        LIMIT 1
+      )
+    ) IS NOT NULL;
+
+    DROP TABLE telemetry_packets;
+    ALTER TABLE telemetry_packets_run_refs RENAME TO telemetry_packets;
+
+    CREATE INDEX IF NOT EXISTS idx_telemetry_packets_session_time
+      ON telemetry_packets(session_id, received_at);
+
+    PRAGMA foreign_keys = ON;
   `);
 }
 

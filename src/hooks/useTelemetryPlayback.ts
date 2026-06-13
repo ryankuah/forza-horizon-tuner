@@ -21,8 +21,10 @@ export function useTelemetryPlayback({
   const [playheadIndex, setPlayheadIndex] = React.useState<number | null>(null);
   const [isPlaying, setIsPlaying] = React.useState(false);
   const [playbackSpeedIndex, setPlaybackSpeedIndex] = React.useState(2);
+  const liveReplayEndIndexRef = React.useRef<number | null>(null);
   const timeline = React.useMemo(() => buildPlaybackTimeline(samples), [samples]);
   const playbackSpeed = PLAYBACK_SPEEDS[playbackSpeedIndex];
+  const isLiveSession = selectedSessionId === "live";
   const playheadPathIndex = React.useMemo(
     () => pathIndexForSampleIndex(displayPath, playheadIndex),
     [displayPath, playheadIndex]
@@ -36,28 +38,39 @@ export function useTelemetryPlayback({
   React.useEffect(() => {
     setIsPlaying(false);
     setPlayheadIndex(null);
+    liveReplayEndIndexRef.current = null;
   }, [selectedSessionId]);
 
   React.useEffect(() => {
-    if (selectedSessionId === "live" || playheadIndex !== null || samples.length === 0) return;
+    if (isLiveSession || playheadIndex !== null || samples.length === 0) return;
     setPlayheadIndex(0);
-  }, [selectedSessionId, playheadIndex, samples.length]);
+  }, [isLiveSession, playheadIndex, samples.length]);
 
   React.useEffect(() => {
     if (!isPlaying || samples.length < 2) return;
 
     const startIndex = Math.min(Math.max(playheadIndex ?? 0, 0), samples.length - 1);
     const startTime = timeline[startIndex] ?? 0;
+    const replayEndIndex = isLiveSession
+      ? Math.min(liveReplayEndIndexRef.current ?? samples.length - 1, samples.length - 1)
+      : samples.length - 1;
     let startedAt = performance.now();
     let frame = 0;
 
     function tick(now: number) {
       const targetTime = startTime + (now - startedAt) * playbackSpeed;
-      const nextIndex = playbackIndexForTime(timeline, targetTime, startIndex);
+      const nextIndex = Math.min(playbackIndexForTime(timeline, targetTime, startIndex), replayEndIndex);
       setPlayheadIndex(nextIndex);
 
-      if (nextIndex >= samples.length - 1) {
-        if (isSessionStreaming && selectedSessionId !== "live") {
+      if (nextIndex >= replayEndIndex) {
+        if (isLiveSession) {
+          liveReplayEndIndexRef.current = null;
+          setIsPlaying(false);
+          setPlayheadIndex(null);
+          return;
+        }
+
+        if (isSessionStreaming) {
           const bufferedEndTime = timeline[timeline.length - 1] ?? startTime;
           startedAt = now - ((bufferedEndTime - startTime) / playbackSpeed);
           frame = window.requestAnimationFrame(tick);
@@ -73,22 +86,37 @@ export function useTelemetryPlayback({
 
     frame = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(frame);
-  }, [isPlaying, samples.length, timeline, playbackSpeed, isSessionStreaming, selectedSessionId, playheadIndex]);
+  }, [isPlaying, samples.length, timeline, playbackSpeed, isSessionStreaming, isLiveSession, playheadIndex]);
 
   function resetPlayback() {
     setIsPlaying(false);
     setPlayheadIndex(null);
+    liveReplayEndIndexRef.current = null;
   }
 
   function scrubPathIndex(index: number | null) {
+    if (index === null) {
+      setIsPlaying(false);
+      if (isLiveSession) {
+        liveReplayEndIndexRef.current = null;
+        setPlayheadIndex(null);
+      }
+      return;
+    }
+
     const sampleIndex = index === null ? null : displayPath[index]?.sampleIndex ?? null;
     if (sampleIndex === null) return;
     setIsPlaying(false);
+    liveReplayEndIndexRef.current = null;
     setPlayheadIndex(Math.min(sampleIndex, Math.max(samples.length - 1, 0)));
   }
 
   function togglePlayback() {
     if (samples.length < 2) return;
+
+    if (!isPlaying && isLiveSession) {
+      liveReplayEndIndexRef.current = samples.length - 1;
+    }
 
     setPlayheadIndex((currentIndex) => {
       if (isPlaying) return currentIndex;
@@ -102,12 +130,14 @@ export function useTelemetryPlayback({
     canDecreasePlaybackSpeed: playbackSpeedIndex > 0,
     canIncreasePlaybackSpeed: playbackSpeedIndex < PLAYBACK_SPEEDS.length - 1,
     canPlayTelemetry: samples.length > 1,
+    canReturnToLive: isLiveSession && playheadIndex !== null,
     isPlaying,
-    playbackLabel: formatPlaybackLabel(timeline, playheadIndex),
+    playbackLabel: formatPlaybackLabel(timeline, playheadIndex, isLiveSession),
     playbackSpeed,
     playheadIndex,
     playheadPathIndex,
     resetPlayback,
+    returnToLive: resetPlayback,
     scrubPathIndex,
     setIsPlaying,
     togglePlayback,
@@ -165,13 +195,14 @@ function playbackIndexForTime(timeline: number[], targetTime: number, startIndex
   return result;
 }
 
-function formatPlaybackLabel(timeline: number[], index: number | null) {
-  if (timeline.length < 2) return "0:00 / 0:00";
+function formatPlaybackLabel(timeline: number[], index: number | null, isLiveSession: boolean) {
+  if (timeline.length < 2) return isLiveSession ? "Live" : "0:00 / 0:00";
 
   const currentIndex = Math.min(Math.max(index ?? 0, 0), timeline.length - 1);
   const totalMs = timeline[timeline.length - 1] ?? 0;
   const currentMs = timeline[currentIndex] ?? 0;
 
+  if (isLiveSession && index === null) return `Live / ${formatPlaybackTime(totalMs)}`;
   return `${formatPlaybackTime(currentMs)} / ${formatPlaybackTime(totalMs)}`;
 }
 

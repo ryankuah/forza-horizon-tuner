@@ -115,12 +115,12 @@ function RpmPowerBandDisplay({
       </div>
 
       <div className="relative h-9 overflow-hidden rounded-md border border-white/10 bg-[#101312]">
-        <div className="absolute inset-y-1.5 left-0 right-0" aria-hidden="true">
+        <div className="absolute inset-y-1.5 left-2 right-2" aria-hidden="true">
           {rpmTicks.map((tick) => (
             <span
               key={tick.rpm}
-              className={`${tick.major ? "top-0 h-full bg-white/25" : "top-1/2 h-3.5 -translate-y-1/2 bg-white/12"} absolute w-px`}
-              style={{ left: `calc(${tick.percent}% - 0.5px)` }}
+              className={`${tick.major ? "top-0 h-full bg-white/25" : "top-1/2 h-3.5 -translate-y-1/2 bg-white/12"} absolute w-px -translate-x-1/2`}
+              style={{ left: `${tick.percent}%` }}
             />
           ))}
         </div>
@@ -138,17 +138,24 @@ function RpmPowerBandDisplay({
             >
               {formatValue(estimate.bandEndRpm, { precision: 0 })}
             </span>
-            <div
-              className="absolute bottom-1.5 h-3.5 rounded-sm bg-[#63da97]/28 ring-1 ring-[#63da97]/45"
-              style={{ left: `${bandStartPercent}%`, width: `${Math.max(1, bandEndPercent - bandStartPercent)}%` }}
-            />
+            <div className="absolute inset-x-2 bottom-1.5 h-3.5">
+              <div
+                className="absolute h-full rounded-sm bg-[#63da97]/28 ring-1 ring-[#63da97]/45"
+                style={{ left: `${bandStartPercent}%`, width: `${Math.max(1, bandEndPercent - bandStartPercent)}%` }}
+              />
+            </div>
           </>
         ) : null}
-        <div className="absolute bottom-1.5 top-5 w-px bg-white/25" style={{ left: `${idlePercent}%` }} />
-        <div className="absolute bottom-1 top-4 w-1 rounded-full bg-[#f3d09b] shadow-[0_0_18px_rgba(243,208,155,0.45)]" style={{ left: `calc(${rpmPercent}% - 2px)` }} />
+        <div className="absolute inset-y-1.5 left-2 right-2">
+          <div className="absolute bottom-0 top-0 w-px -translate-x-1/2 bg-white/25" style={{ left: `${idlePercent}%` }} />
+          <div
+            className="absolute bottom-0 top-0 w-1 -translate-x-1/2 rounded-full bg-[#f3d09b] shadow-[0_0_18px_rgba(243,208,155,0.45)]"
+            style={{ left: `${rpmPercent}%` }}
+          />
+        </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 text-[10px] font-black uppercase leading-none text-[#9ba6a1]">
+      <div className="grid grid-cols-3 gap-2 px-1 text-[10px] font-black uppercase leading-none text-[#9ba6a1]">
         <span className="truncate text-left">Idle {formatValue(idleRpm, { precision: 0 })}</span>
         <span className="truncate text-center">Peak {estimate ? formatValue(estimate.peakPowerRpm, { precision: 0 }) : "0"}</span>
         <span className="truncate text-right">Redline {formatValue(maxRpm, { precision: 0 })}</span>

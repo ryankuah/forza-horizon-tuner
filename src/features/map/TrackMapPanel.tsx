@@ -18,11 +18,13 @@ export function TrackMapPanel({
   playbackSpeed,
   canDecreasePlaybackSpeed,
   canIncreasePlaybackSpeed,
+  canReturnToLive,
   onHoverIndex,
   onScrubPathIndex,
   onTogglePlayback,
   onDecreasePlaybackSpeed,
-  onIncreasePlaybackSpeed
+  onIncreasePlaybackSpeed,
+  onReturnToLive
 }: {
   path: PathSample[];
   hoverIndex: number | null;
@@ -34,11 +36,13 @@ export function TrackMapPanel({
   playbackSpeed: number;
   canDecreasePlaybackSpeed: boolean;
   canIncreasePlaybackSpeed: boolean;
+  canReturnToLive: boolean;
   onHoverIndex: (index: number | null) => void;
   onScrubPathIndex: (index: number | null) => void;
   onTogglePlayback: () => void;
   onDecreasePlaybackSpeed: () => void;
   onIncreasePlaybackSpeed: () => void;
+  onReturnToLive: () => void;
 }) {
   const svgRef = React.useRef<SVGSVGElement | null>(null);
   const dragRef = React.useRef<MapDragState | null>(null);
@@ -288,9 +292,11 @@ export function TrackMapPanel({
           playbackSpeed={playbackSpeed}
           canDecreasePlaybackSpeed={canDecreasePlaybackSpeed}
           canIncreasePlaybackSpeed={canIncreasePlaybackSpeed}
+          canReturnToLive={canReturnToLive}
           onTogglePlayback={onTogglePlayback}
           onDecreasePlaybackSpeed={onDecreasePlaybackSpeed}
           onIncreasePlaybackSpeed={onIncreasePlaybackSpeed}
+          onReturnToLive={onReturnToLive}
           onZoomIn={() => zoomMapFromSelectedPoint(1 / MAP_ZOOM_STEP)}
           onZoomOut={() => zoomMapFromSelectedPoint(MAP_ZOOM_STEP)}
           onReset={() => {

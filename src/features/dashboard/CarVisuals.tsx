@@ -1,10 +1,14 @@
 import { Activity, Gauge } from "lucide-react";
 import type { Telemetry, TireMfdTire } from "@/types/telemetry";
 import { average, clampNumber, radiansToDegrees } from "@/lib/math";
-import { compressionTone, formatValue, slipAmountTone, temperatureSplitLabel, temperatureTone } from "@/lib/format";
+import { compressionTone, formatValue, slipAmountTone, temperatureTone } from "@/lib/format";
 import { frontTireSlipAngle, rearTireSlipAngle } from "@/features/map/cornerAnalysis";
 import { TelemetryGroup, metricToneClass } from "./TelemetryPanelPrimitives";
 import { buildTireMfdData, tireTemperatureColor, tireTextColorClass } from "@/features/telemetry/tireVisuals";
+
+const CHASSIS_GRID_TEMPLATE = "72px 38px 38px 58px 58px 38px 38px 72px";
+const CHASSIS_GRID_MAX_WIDTH = "max-w-[440px]";
+const AXLE_SUMMARY_COLUMNS = ["1", "3", "6", "8"];
 
 export function CarDataPanel({ telemetry }: { telemetry: Telemetry | null }) {
   return (
@@ -36,12 +40,6 @@ function ChassisVisual({ telemetry }: { telemetry: Telemetry | null }) {
     telemetry.NormalizedSuspensionTravelRearLeft,
     telemetry.NormalizedSuspensionTravelRearRight
   ]) : undefined;
-  const maxCompression = telemetry ? Math.max(
-    telemetry.NormalizedSuspensionTravelFrontLeft,
-    telemetry.NormalizedSuspensionTravelFrontRight,
-    telemetry.NormalizedSuspensionTravelRearLeft,
-    telemetry.NormalizedSuspensionTravelRearRight
-  ) : undefined;
   const frontCombinedSlip = telemetry ? average([
     Math.abs(telemetry.TireCombinedSlipFrontLeft),
     Math.abs(telemetry.TireCombinedSlipFrontRight)
@@ -57,51 +55,43 @@ function ChassisVisual({ telemetry }: { telemetry: Telemetry | null }) {
   const frontSummary = [
     { label: "Slip", value: formatValue(frontCombinedSlip, { precision: 2 }), tone: slipAmountTone(frontCombinedSlip) },
     { label: "Angle", value: formatValue(frontSlipAngle, { precision: 2 }) },
-    { label: "Temp", value: `${formatValue(telemetry?.frontTemp, { precision: 0 })}°C`, className: tireTextColorClass(telemetry?.frontTemp ?? 0) }
+    { label: "Temp", value: `${formatValue(telemetry?.frontTemp, { precision: 0 })}°C`, className: tireTextColorClass(telemetry?.frontTemp ?? 0) },
+    { label: "Comp", value: `${formatValue(frontTravel !== undefined ? frontTravel * 100 : undefined, { precision: 0 })}%`, tone: compressionTone(frontTravel) }
   ];
   const rearSummary = [
     { label: "Slip", value: formatValue(rearCombinedSlip, { precision: 2 }), tone: slipAmountTone(rearCombinedSlip) },
     { label: "Angle", value: formatValue(rearSlipAngle, { precision: 2 }) },
-    { label: "Temp", value: `${formatValue(telemetry?.rearTemp, { precision: 0 })}°C`, className: tireTextColorClass(telemetry?.rearTemp ?? 0) }
+    { label: "Temp", value: `${formatValue(telemetry?.rearTemp, { precision: 0 })}°C`, className: tireTextColorClass(telemetry?.rearTemp ?? 0) },
+    { label: "Comp", value: `${formatValue(rearTravel !== undefined ? rearTravel * 100 : undefined, { precision: 0 })}%`, tone: compressionTone(rearTravel) }
   ];
-  const suspensionSummary = [
-    { label: "F comp", value: `${formatValue(frontTravel !== undefined ? frontTravel * 100 : undefined, { precision: 0 })}%`, tone: compressionTone(frontTravel) },
-    { label: "R comp", value: `${formatValue(rearTravel !== undefined ? rearTravel * 100 : undefined, { precision: 0 })}%`, tone: compressionTone(rearTravel) },
-    { label: "Max", value: `${formatValue(maxCompression !== undefined ? maxCompression * 100 : undefined, { precision: 0 })}%`, tone: compressionTone(maxCompression) },
-    { label: "Split", value: `${formatValue(suspensionSplit, { precision: 0 })}%` }
+  const balanceSummary = [
+    {
+      label: "Temp balance",
+      value: formatAxleDelta(tireTempDelta, "°C"),
+      tone: tireTempDelta === undefined ? "default" as const : temperatureTone(tireTempDelta)
+    },
+    { label: "Split", value: formatAxleDelta(suspensionSplit, "%") }
   ];
+  const frontCorners = corners.filter((corner) => corner.axle === "front");
+  const rearCorners = corners.filter((corner) => corner.axle === "rear");
 
   return (
     <div className="grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-2">
-      <div className="grid gap-3 md:grid-cols-[minmax(150px,1fr)_minmax(190px,0.9fr)] md:items-start">
-        <ChassisAxleSummary title="Front axle" items={frontSummary} />
-        <ChassisBalanceSummary
-          label="Temp balance"
-          value={`${temperatureSplitLabel(tireTempDelta)} ${formatValue(tireTempDelta, { precision: 0 })}°C`}
-          tone={tireTempDelta === undefined ? "default" : temperatureTone(tireTempDelta)}
-        />
+      <ChassisAxleSummary title="Front axle" items={frontSummary} />
+      <div className="grid min-h-0 grid-rows-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-1">
+        <ChassisCornerRow corners={frontCorners} tires={tires} />
+        <ChassisMiddleSummary items={balanceSummary} />
+        <ChassisCornerRow corners={rearCorners} tires={tires} />
       </div>
-      <div className="grid min-h-0 grid-cols-2 gap-x-2 gap-y-2">
-        {corners.map((corner) => {
-          const tire = tires.find((candidate) => candidate.id === corner.id);
-          return (
-            <ChassisCorner
-              key={corner.id}
-              label={corner.label}
-              side={corner.side}
-              axle={corner.axle}
-              tire={tire}
-              travel={corner.travel}
-            />
-          );
-        })}
-      </div>
-      <div className="grid gap-3 md:grid-cols-[minmax(150px,1fr)_minmax(230px,1.1fr)] md:items-end">
-        <ChassisAxleSummary title="Rear axle" items={rearSummary} />
-        <ChassisMetricStrip title="Suspension" items={suspensionSummary} />
-      </div>
+      <ChassisAxleSummary title="Rear axle" items={rearSummary} />
     </div>
   );
+}
+
+function formatAxleDelta(value: number | undefined, suffix: string) {
+  const rounded = Math.round(value ?? 0);
+  if (rounded === 0) return `Even 0${suffix}`;
+  return `${rounded > 0 ? "Front" : "Rear"} +${Math.abs(rounded)}${suffix}`;
 }
 
 type ChassisSummaryItem = {
@@ -119,49 +109,62 @@ function ChassisAxleSummary({
   items: ChassisSummaryItem[];
 }) {
   return (
-    <div className="grid gap-1.5">
+    <div className={`mx-auto grid w-full ${CHASSIS_GRID_MAX_WIDTH} justify-items-center gap-1.5`}>
       <span className="text-[9px] font-black uppercase leading-none tracking-wide text-[#9ba6a1]">{title}</span>
-      <div className="grid grid-cols-3 gap-x-4 gap-y-1">
-        {items.map((item) => (
-          <ChassisSummaryMetric key={item.label} item={item} />
+      <div className="grid w-full items-center gap-x-1 gap-y-1 text-center" style={{ gridTemplateColumns: CHASSIS_GRID_TEMPLATE }}>
+        {items.map((item, index) => (
+          <div key={item.label} style={{ gridColumn: AXLE_SUMMARY_COLUMNS[index] }}>
+            <ChassisSummaryMetric item={item} />
+          </div>
         ))}
       </div>
     </div>
   );
 }
 
-function ChassisMetricStrip({
-  title,
+function ChassisMiddleSummary({
   items
 }: {
-  title: string;
   items: ChassisSummaryItem[];
 }) {
   return (
-    <div className="grid gap-1.5">
-      <span className="text-[9px] font-black uppercase leading-none tracking-wide text-[#9ba6a1]">{title}</span>
-      <div className="grid grid-cols-4 gap-x-4 gap-y-1">
-        {items.map((item) => (
-          <ChassisSummaryMetric key={item.label} item={item} />
-        ))}
-      </div>
+    <div className={`mx-auto grid w-full ${CHASSIS_GRID_MAX_WIDTH} items-center gap-x-1 gap-y-1 text-center`} style={{ gridTemplateColumns: CHASSIS_GRID_TEMPLATE }}>
+      {items.map((item, index) => (
+        <div key={item.label} style={{ gridColumn: index === 0 ? "3 / 5" : "5 / 7" }}>
+          <ChassisSummaryMetric item={item} />
+        </div>
+      ))}
     </div>
   );
 }
 
-function ChassisBalanceSummary({
-  label,
-  value,
-  tone
+function ChassisCornerRow({
+  corners,
+  tires
 }: {
-  label: string;
-  value: string;
-  tone: "default" | "ok" | "warn" | "alert";
+  corners: {
+    id: string;
+    label: string;
+    side: "left" | "right";
+    axle: "front" | "rear";
+    travel: number | undefined;
+  }[];
+  tires: TireMfdTire[];
 }) {
   return (
-    <div className="grid justify-items-start gap-1 md:justify-items-end">
-      <span className="text-[9px] font-black uppercase leading-none tracking-wide text-[#9ba6a1]">{label}</span>
-      <span className={`text-[13px] font-black leading-none tabular-nums ${metricToneClass(tone)}`}>{value}</span>
+    <div className={`mx-auto grid min-h-0 w-full ${CHASSIS_GRID_MAX_WIDTH} items-center gap-x-1`} style={{ gridTemplateColumns: CHASSIS_GRID_TEMPLATE }}>
+      {corners.map((corner) => {
+        const tire = tires.find((candidate) => candidate.id === corner.id);
+        return (
+          <ChassisCornerCells
+            key={corner.id}
+            label={corner.label}
+            side={corner.side}
+            tire={tire}
+            travel={corner.travel}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -177,16 +180,14 @@ function ChassisSummaryMetric({ item }: { item: ChassisSummaryItem }) {
   );
 }
 
-function ChassisCorner({
+function ChassisCornerCells({
   label,
   side,
-  axle,
   tire,
   travel
 }: {
   label: string;
   side: "left" | "right";
-  axle: "front" | "rear";
   tire: TireMfdTire | undefined;
   travel: number | undefined;
 }) {
@@ -196,6 +197,7 @@ function ChassisCorner({
   const tireSlip = tire?.combinedSlip ?? 0;
   const tireReadout = (
     <CornerStackReadout
+      align={side === "left" ? "right" : "left"}
       lines={[
         { label: "Temp", value: `${formatValue(tire?.temp, { precision: 0 })}°C`, className: tireTextColorClass(tire?.temp ?? 0) },
         { label: "Slip", value: `${Math.round(clampNumber(tireSlip, 0, 1.5) * 100)}%`, className: metricToneClass(slipAmountTone(tireSlip)) },
@@ -205,6 +207,7 @@ function ChassisCorner({
   );
   const suspensionReadout = (
     <CornerStackReadout
+      align={side === "left" ? "left" : "right"}
       lines={[
         { label: "Comp", value: `${Math.round(compression * 100)}%`, className: metricToneClass(tone) }
       ]}
@@ -212,29 +215,23 @@ function ChassisCorner({
   );
 
   return (
-    <div
-      className={[
-        "grid w-full max-w-[288px] min-w-0 grid-cols-[minmax(42px,1fr)_38px_38px_minmax(42px,1fr)] items-center gap-1 p-1",
-        side === "left" ? "justify-self-end" : "justify-self-start",
-        axle === "front" ? "self-end" : "self-start"
-      ].join(" ")}
-    >
+    <>
       {side === "left" ? (
         <>
-          {tireReadout}
-          <TireGlyph label={label} tire={tire} />
-          <SpringGlyph compression={compression} color={springColor} label={label} />
-          {suspensionReadout}
+          <div className="min-w-0 justify-self-stretch" style={{ gridColumn: "1" }}>{tireReadout}</div>
+          <div className="justify-self-center" style={{ gridColumn: "2" }}><TireGlyph label={label} tire={tire} /></div>
+          <div className="justify-self-center" style={{ gridColumn: "3" }}><SpringGlyph compression={compression} color={springColor} label={label} /></div>
+          <div className="min-w-0 justify-self-stretch" style={{ gridColumn: "4" }}>{suspensionReadout}</div>
         </>
       ) : (
         <>
-          {suspensionReadout}
-          <SpringGlyph compression={compression} color={springColor} label={label} />
-          <TireGlyph label={label} tire={tire} />
-          {tireReadout}
+          <div className="min-w-0 justify-self-stretch" style={{ gridColumn: "5" }}>{suspensionReadout}</div>
+          <div className="justify-self-center" style={{ gridColumn: "6" }}><SpringGlyph compression={compression} color={springColor} label={label} /></div>
+          <div className="justify-self-center" style={{ gridColumn: "7" }}><TireGlyph label={label} tire={tire} /></div>
+          <div className="min-w-0 justify-self-stretch" style={{ gridColumn: "8" }}>{tireReadout}</div>
         </>
       )}
-    </div>
+    </>
   );
 }
 
@@ -418,12 +415,20 @@ function PitchCarGlyph() {
 }
 
 function CornerStackReadout({
+  align = "left",
   lines
 }: {
+  align?: "left" | "center" | "right";
   lines: { label: string; value: string; className: string }[];
 }) {
+  const alignClass = {
+    center: "text-center",
+    left: "",
+    right: "text-right"
+  }[align];
+
   return (
-    <div className="grid min-w-0 content-center gap-1">
+    <div className={`grid min-w-0 content-center gap-1 ${alignClass}`}>
       {lines.map((line, index) => (
         <span key={`${line.label}-${index}`} className="block min-w-0">
           <span className="block truncate text-[9px] font-black uppercase leading-none tracking-wide text-[#9ba6a1]">{line.label}</span>

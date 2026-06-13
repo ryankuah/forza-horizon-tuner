@@ -47,7 +47,6 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
   const database = createTelemetryDatabase(options.dbPath);
   const removedEmptySessions = database.deleteEmptyRunsAndSessions();
   const events = new EventEmitter();
-  const udp = dgram.createSocket("udp4");
   const state: RuntimeState = {
     connected: false,
     packets: 0,
@@ -62,12 +61,13 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
   let currentSession = createPendingSession();
   let currentRun = createPendingRun(currentSession.id, currentSession.startedAt, "connection");
   let telemetryWindow = new TelemetryWindow();
+  let udp: dgram.Socket | null = null;
+  let udpListening = false;
   let staleTimer: NodeJS.Timeout | null = null;
   let simulatorTimer: NodeJS.Timeout | null = null;
 
   function start() {
-    udp.on("message", handleUdpMessage);
-    udp.bind(udpPort, "0.0.0.0");
+    startUdpListening();
     staleTimer = setInterval(markStaleConnections, 1000);
 
     if (options.simulate) {
@@ -80,8 +80,52 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
   function stop() {
     if (staleTimer) clearInterval(staleTimer);
     if (simulatorTimer) clearInterval(simulatorTimer);
-    udp.off("message", handleUdpMessage);
-    udp.close();
+    stopUdpListening({ broadcastState: false });
+  }
+
+  function startUdpListening() {
+    if (udpListening || udp) return snapshot();
+
+    const socket = dgram.createSocket("udp4");
+    udp = socket;
+    socket.on("message", handleUdpMessage);
+    socket.on("error", (error) => {
+      console.error(`UDP listener error: ${error instanceof Error ? error.message : String(error)}`);
+      udpListening = false;
+      state.connected = false;
+      state.advice = buildTuningAdvice(null, state.summary);
+      if (udp === socket) udp = null;
+      socket.close();
+      broadcast();
+    });
+    socket.bind(udpPort, "0.0.0.0", () => {
+      if (udp !== socket) {
+        socket.close();
+        return;
+      }
+      udpListening = true;
+      broadcast();
+    });
+
+    return snapshot();
+  }
+
+  function stopUdpListening({ broadcastState = true } = {}) {
+    if (!udp) return snapshot();
+
+    const socket = udp;
+    udp = null;
+    udpListening = false;
+    state.connected = false;
+    state.advice = buildTuningAdvice(null, state.summary);
+    socket.off("message", handleUdpMessage);
+    socket.close();
+    if (broadcastState) broadcast();
+    return snapshot();
+  }
+
+  function setUdpListening(nextUdpListening: boolean) {
+    return nextUdpListening ? startUdpListening() : stopUdpListening();
   }
 
   function onState(listener: (state: AppState) => void) {
@@ -102,6 +146,7 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
       telemetry: state.last,
       summary: state.summary,
       advice: state.advice,
+      udpListening,
       runId: currentRun.id
     };
   }
@@ -303,6 +348,7 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     getRun,
     getRunDetail,
     iterateSampleJson,
+    setUdpListening,
     logStartup
   };
 }
