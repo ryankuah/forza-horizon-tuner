@@ -8,12 +8,12 @@ import { buildTireMfdData, tireTemperatureColor, tireTextColorClass } from "@/fe
 
 export function CarDataPanel({ telemetry }: { telemetry: Telemetry | null }) {
   return (
-    <div className="grid gap-[18px]">
-      <TelemetryGroup title="Tires and suspension" icon={<Gauge size={18} />}>
+    <div className="grid h-full min-h-0 min-w-0 grid-rows-[minmax(0,1.55fr)_minmax(0,1fr)] gap-4">
+      <TelemetryGroup title="Tires and suspension" icon={<Gauge size={18} />} className="min-h-0">
         <ChassisVisual telemetry={telemetry} />
       </TelemetryGroup>
 
-      <TelemetryGroup title="Load and motion" icon={<Activity size={18} />}>
+      <TelemetryGroup title="Load and motion" icon={<Activity size={18} />} className="min-h-0">
         <MotionVisual telemetry={telemetry} />
       </TelemetryGroup>
     </div>
@@ -72,8 +72,8 @@ function ChassisVisual({ telemetry }: { telemetry: Telemetry | null }) {
   ];
 
   return (
-    <div className="grid gap-3">
-      <div className="grid gap-2 md:grid-cols-[minmax(150px,1fr)_minmax(190px,0.9fr)] md:items-start">
+    <div className="grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-2">
+      <div className="grid gap-3 md:grid-cols-[minmax(150px,1fr)_minmax(190px,0.9fr)] md:items-start">
         <ChassisAxleSummary title="Front axle" items={frontSummary} />
         <ChassisBalanceSummary
           label="Temp balance"
@@ -81,7 +81,7 @@ function ChassisVisual({ telemetry }: { telemetry: Telemetry | null }) {
           tone={tireTempDelta === undefined ? "default" : temperatureTone(tireTempDelta)}
         />
       </div>
-      <div className="grid min-h-[190px] grid-cols-2 gap-x-2 gap-y-4">
+      <div className="grid min-h-0 grid-cols-2 gap-x-2 gap-y-2">
         {corners.map((corner) => {
           const tire = tires.find((candidate) => candidate.id === corner.id);
           return (
@@ -96,7 +96,7 @@ function ChassisVisual({ telemetry }: { telemetry: Telemetry | null }) {
           );
         })}
       </div>
-      <div className="grid gap-2 md:grid-cols-[minmax(150px,1fr)_minmax(230px,1.1fr)] md:items-end">
+      <div className="grid gap-3 md:grid-cols-[minmax(150px,1fr)_minmax(230px,1.1fr)] md:items-end">
         <ChassisAxleSummary title="Rear axle" items={rearSummary} />
         <ChassisMetricStrip title="Suspension" items={suspensionSummary} />
       </div>
@@ -121,7 +121,7 @@ function ChassisAxleSummary({
   return (
     <div className="grid gap-1.5">
       <span className="text-[9px] font-black uppercase leading-none tracking-wide text-[#9ba6a1]">{title}</span>
-      <div className="grid grid-cols-3 gap-1.5">
+      <div className="grid grid-cols-3 gap-x-4 gap-y-1">
         {items.map((item) => (
           <ChassisSummaryMetric key={item.label} item={item} />
         ))}
@@ -140,7 +140,7 @@ function ChassisMetricStrip({
   return (
     <div className="grid gap-1.5">
       <span className="text-[9px] font-black uppercase leading-none tracking-wide text-[#9ba6a1]">{title}</span>
-      <div className="grid grid-cols-4 gap-1.5">
+      <div className="grid grid-cols-4 gap-x-4 gap-y-1">
         {items.map((item) => (
           <ChassisSummaryMetric key={item.label} item={item} />
         ))}
@@ -168,9 +168,9 @@ function ChassisBalanceSummary({
 
 function ChassisSummaryMetric({ item }: { item: ChassisSummaryItem }) {
   return (
-    <span className="min-w-0 rounded-md border border-white/10 bg-white/[0.035] px-2 py-1.5">
-      <span className="block truncate text-[8px] font-black uppercase leading-none tracking-wide text-[#9ba6a1]">{item.label}</span>
-      <span className={`block truncate text-[12px] font-black leading-tight tabular-nums ${item.className ?? metricToneClass(item.tone ?? "default")}`}>
+    <span className="min-w-0">
+      <span className="block text-[8px] font-black uppercase leading-none tracking-wide text-[#9ba6a1]">{item.label}</span>
+      <span className={`block text-[12px] font-black leading-tight tabular-nums ${item.className ?? metricToneClass(item.tone ?? "default")}`}>
         {item.value}
       </span>
     </span>
@@ -214,7 +214,7 @@ function ChassisCorner({
   return (
     <div
       className={[
-        "grid w-[288px] max-w-full min-w-0 grid-cols-[minmax(52px,1fr)_42px_42px_minmax(46px,1fr)] items-center gap-1.5 p-1.5",
+        "grid w-full max-w-[288px] min-w-0 grid-cols-[minmax(42px,1fr)_38px_38px_minmax(42px,1fr)] items-center gap-1 p-1",
         side === "left" ? "justify-self-end" : "justify-self-start",
         axle === "front" ? "self-end" : "self-start"
       ].join(" ")}
@@ -243,7 +243,7 @@ function TireGlyph({ label, tire }: { label: string; tire: TireMfdTire | undefin
   const slipHeight = clampNumber(slip / 1.2, 0.12, 1) * 54;
 
   return (
-    <svg className="h-[64px] w-[42px]" viewBox="0 0 54 82" role="img" aria-label={`${label} tire`}>
+    <svg className="h-[58px] w-[38px]" viewBox="0 0 54 82" role="img" aria-label={`${label} tire`}>
       <rect className="stroke-[#101312] [stroke-width:2]" x="11" y="9" width="32" height="64" rx="7" fill={tireTemperatureColor(tire?.temp ?? 0)} />
       <rect x="11" y={73 - slipHeight} width="32" height={slipHeight} rx="6" fill="rgba(0,0,0,0.32)" />
       <text className="fill-[#101312] text-[12px] font-black [paint-order:stroke] [stroke:white] [stroke-width:3px]" x="27" y="45" textAnchor="middle">{label}</text>
@@ -258,7 +258,7 @@ function SpringGlyph({ compression, color, label }: { compression: number; color
   const springHeight = bottomY - topY;
 
   return (
-    <svg className="h-[64px] w-[42px]" viewBox="0 0 54 82" role="img" aria-label={`${label} suspension`}>
+    <svg className="h-[58px] w-[38px]" viewBox="0 0 54 82" role="img" aria-label={`${label} suspension`}>
       <path className="fill-none stroke-white/10 [stroke-width:7]" d={`M${centerX} 8 V74`} />
       <path className="fill-none stroke-white/20 [stroke-linecap:round] [stroke-width:2.5]" d={`M14 10 H40 M12 ${bottomY + 5} H42`} />
       <path className="fill-none [stroke-linecap:round] [stroke-linejoin:round] [stroke-width:3.2]" d={springPath(centerX, topY + 4, springHeight - 8)} stroke={color} />
@@ -302,7 +302,7 @@ function MotionVisual({ telemetry }: { telemetry: Telemetry | null }) {
   const dot = gDotPosition(motion.lateralG, motion.longitudinalG);
 
   return (
-    <div className="grid gap-3 xl:grid-cols-[190px_minmax(340px,1fr)] xl:items-center">
+    <div className="grid h-full min-h-0 min-w-0 grid-cols-[minmax(160px,0.85fr)_minmax(280px,1.15fr)] items-center gap-3">
       <div className="min-w-0">
         <GForcePlotSvg dot={dot} lateralG={motion.lateralG} longitudinalG={motion.longitudinalG} />
       </div>
@@ -323,7 +323,7 @@ function GForcePlotSvg({
   longitudinalG: number;
 }) {
   return (
-    <svg className="h-[168px] w-full min-w-0 lg:h-[176px]" viewBox="0 0 240 176" role="img" aria-label="Lateral and longitudinal G load">
+    <svg className="h-[150px] w-full min-w-0" viewBox="0 0 240 176" role="img" aria-label="Lateral and longitudinal G load">
       <text className="fill-[#9ba6a1] text-[10px] font-bold" x={MOTION_CENTER} y="13" textAnchor="middle">Longitudinal G</text>
       <text className="fill-[#f5f7f6] text-[16px] font-black tabular-nums" x={MOTION_CENTER} y="33" textAnchor="middle">
         {formatValue(longitudinalG, { precision: 2 })}
@@ -351,7 +351,7 @@ function ChassisAttitudeSvg({
   yawRateDeg: number;
 }) {
   return (
-    <svg className="h-[168px] w-full min-w-0 lg:h-[176px]" viewBox="0 0 340 176" role="img" aria-label="Pitch roll and yaw rate attitude">
+    <svg className="h-[150px] w-full min-w-0" viewBox="0 0 340 176" role="img" aria-label="Pitch roll and yaw rate attitude">
       <text className="fill-[#9ba6a1] text-[10px] font-bold" x="170" y="20" textAnchor="middle">Yaw rate</text>
       <text className="fill-[#f5f7f6] text-[14px] font-black tabular-nums" x="170" y="38" textAnchor="middle">
         {formatValue(yawRateDeg, { precision: 0 })}°/s

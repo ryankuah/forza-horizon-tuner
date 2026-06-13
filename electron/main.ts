@@ -5,23 +5,25 @@ import path from "node:path";
 import { createTelemetryRuntime } from "../server/runtime";
 import type { AppState } from "../src/types/telemetry";
 
-const isDev = !app.isPackaged;
-
 let mainWindow: BrowserWindow | null = null;
 let runtime: ReturnType<typeof createTelemetryRuntime> | null = null;
 
 function rendererEntry() {
-  if (process.env.VITE_DEV_SERVER_URL) {
-    return process.env.VITE_DEV_SERVER_URL;
-  }
-
   return `file://${path.join(__dirname, "..", "dist", "index.html")}`;
+}
+
+function appIconPath() {
+  const candidates = [
+    path.join(__dirname, "..", "build", "icon.png"),
+    path.join(process.resourcesPath, "icon.png")
+  ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate));
 }
 
 function startTelemetryRuntime() {
   runtime = createTelemetryRuntime({
-    dbPath: path.join(app.getPath("userData"), "telemetry.sqlite"),
-    simulate: process.env.SIMULATE === "1"
+    dbPath: path.join(app.getPath("userData"), "telemetry.sqlite")
   });
   runtime.onState((state) => {
     mainWindow?.webContents.send("telemetry:state", state);
@@ -33,8 +35,7 @@ function startTelemetryRuntime() {
 function setupTelemetryIpc() {
   ipcMain.handle("telemetry:snapshot", () => runtime?.snapshot());
   ipcMain.handle("telemetry:sessions", () => runtime?.listSessions().sessions ?? []);
-  ipcMain.handle("telemetry:session-detail", (_event, sessionId: string) => runtime?.getSessionDetail(sessionId) ?? null);
-  ipcMain.handle("telemetry:new-session", () => Boolean(runtime?.createNewSession().currentSessionId));
+  ipcMain.handle("telemetry:run-detail", (_event, runId: string) => runtime?.getRunDetail(runId) ?? null);
 }
 
 async function createMainWindow() {
@@ -44,6 +45,7 @@ async function createMainWindow() {
     minWidth: 1100,
     minHeight: 720,
     backgroundColor: "#09090b",
+    icon: appIconPath(),
     title: "",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 16, y: 18 },
@@ -70,10 +72,6 @@ async function createMainWindow() {
   });
 
   await mainWindow.loadURL(rendererEntry());
-
-  if (isDev) {
-    mainWindow.webContents.openDevTools({ mode: "detach" });
-  }
 }
 
 function setupAutoUpdates() {

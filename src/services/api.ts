@@ -1,15 +1,10 @@
-import type { SessionDetail } from "@/types/telemetry";
+import type { RunDetail } from "@/types/telemetry";
 
 export async function fetchSessions() {
   return window.telemetryApp.getSessions();
 }
 
 
-export async function fetchSessionDetail(sessionId: string) {
-  return window.telemetryApp.getSessionDetail(sessionId) as Promise<SessionDetail | null>;
-}
-
-
-export async function createNewSession() {
-  return window.telemetryApp.createNewSession();
+export async function fetchRunDetail(runId: string) {
+  return window.telemetryApp.getRunDetail(runId) as Promise<RunDetail | null>;
 }

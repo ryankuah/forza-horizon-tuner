@@ -1,9 +1,10 @@
-import { Car, Check, Clock, PanelLeftClose, PanelLeftOpen, Plus, Radio } from "lucide-react";
+import * as React from "react";
+import { Car, Check, ChevronDown, ChevronRight, Clock, PanelLeftClose, PanelLeftOpen, Radio } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { drivetrainLabel, shortSessionId } from "@/lib/format";
-import type { SessionSelection, SessionSummary, Telemetry } from "@/types/telemetry";
+import type { RunSelection, RunSummary, SessionSummary, SessionWithRuns, Telemetry } from "@/types/telemetry";
 
 function formatSessionTime(value: number | null | undefined) {
   if (!value) return "No packets";
@@ -15,17 +16,17 @@ function formatSessionTime(value: number | null | undefined) {
   });
 }
 
-function formatCar(session: Pick<SessionSummary, "carOrdinal" | "carClass" | "carPerformanceIndex" | "drivetrainType">) {
-  const carId = session.carOrdinal === null || session.carOrdinal === undefined ? "Unknown car" : `Car ${session.carOrdinal}`;
-  const classLabel = session.carClass === null || session.carClass === undefined ? null : `Class ${session.carClass}`;
-  const piLabel = session.carPerformanceIndex === null || session.carPerformanceIndex === undefined ? null : `PI ${session.carPerformanceIndex}`;
-  const drivetrain = session.drivetrainType === null || session.drivetrainType === undefined ? null : drivetrainLabel(session.drivetrainType);
+function formatCar(run: Pick<RunSummary, "carOrdinal" | "carClass" | "carPerformanceIndex" | "drivetrainType">) {
+  const carId = run.carOrdinal === null || run.carOrdinal === undefined ? "Unknown car" : `Car ${run.carOrdinal}`;
+  const classLabel = run.carClass === null || run.carClass === undefined ? null : `Class ${run.carClass}`;
+  const piLabel = run.carPerformanceIndex === null || run.carPerformanceIndex === undefined ? null : `PI ${run.carPerformanceIndex}`;
+  const drivetrain = run.drivetrainType === null || run.drivetrainType === undefined ? null : drivetrainLabel(run.drivetrainType);
   return [carId, classLabel, piLabel, drivetrain].filter(Boolean).join(" / ");
 }
 
-function formatDuration(session: SessionSummary) {
-  const start = session.startedAt;
-  const end = session.endedAt ?? session.lastPacketAt;
+function formatDuration(item: Pick<SessionSummary | RunSummary, "startedAt" | "endedAt" | "lastPacketAt">) {
+  const start = item.startedAt;
+  const end = item.endedAt ?? item.lastPacketAt;
   if (!end || end <= start) return "Open";
 
   const totalSeconds = Math.round((end - start) / 1000);
@@ -34,63 +35,74 @@ function formatDuration(session: SessionSummary) {
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
+function splitReasonLabel(reason: string | null | undefined) {
+  if (reason === "car_change") return "Car change";
+  if (reason === "afk") return "AFK";
+  if (reason === "telemetry_reset") return "Reset";
+  if (reason === "udp_reconnect") return "Reconnect";
+  if (reason === "legacy") return "Legacy";
+  return "Run";
+}
+
 export function SessionHeader({
   sessions,
-  selectedSessionId,
+  selectedRunId,
   canSelectLive,
   liveSessionId,
+  liveRunId,
   liveTelemetry,
   livePackets,
   liveBadPackets,
   liveLastPacketAt,
   isCollapsed,
   onCollapsedChange,
-  onSessionChange,
-  onNewSession
+  onRunChange
 }: {
-  sessions: SessionSummary[];
-  selectedSessionId: SessionSelection;
+  sessions: SessionWithRuns[];
+  selectedRunId: RunSelection;
   canSelectLive: boolean;
   liveSessionId?: string;
+  liveRunId?: string;
   liveTelemetry?: Telemetry | null;
   livePackets?: number;
   liveBadPackets?: number;
   liveLastPacketAt?: number | null;
   isCollapsed: boolean;
   onCollapsedChange: (isCollapsed: boolean) => void;
-  onSessionChange: (sessionId: SessionSelection) => void;
-  onNewSession: () => void | Promise<void>;
+  onRunChange: (runId: RunSelection) => void;
 }) {
   const selectedValue = canSelectLive
-    ? selectedSessionId
-    : selectedSessionId === "live"
-      ? sessions[0]?.id ?? "__none"
-      : selectedSessionId;
+    ? selectedRunId
+    : selectedRunId === "live"
+      ? sessions[0]?.runs[0]?.id ?? "__none"
+      : selectedRunId;
 
-  function selectSession(sessionId: SessionSelection) {
-    if (sessionId === "__none") return;
-    onSessionChange(sessionId);
+  function selectRun(runId: RunSelection | "__none") {
+    if (runId === "__none") return;
+    onRunChange(runId);
   }
 
   return (
     <aside
       className={cn(
         "flex h-screen shrink-0 flex-col border-r border-white/10 bg-[#242424] text-[#e7e7e7] transition-[width] duration-200 ease-out",
-        isCollapsed ? "w-[68px]" : "w-[292px]"
+        isCollapsed ? "w-[68px]" : "w-[316px]"
       )}
       aria-label="Sessions"
     >
       <div className="flex h-[62px] shrink-0 items-center justify-end px-3 [-webkit-app-region:drag]">
-        <Button
-          className="text-[#b6b6b6] hover:bg-white/10 hover:text-white [-webkit-app-region:no-drag]"
-          variant="ghost"
-          size="icon"
-          type="button"
-          onClick={() => onCollapsedChange(!isCollapsed)}
-          aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-        >
-          {isCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
-        </Button>
+        {!isCollapsed ? (
+          <Button
+            className="text-[#b6b6b6] hover:bg-white/10 hover:text-white [-webkit-app-region:no-drag]"
+            variant="ghost"
+            size="icon"
+            type="button"
+            onClick={() => onCollapsedChange(true)}
+            aria-label="Collapse sidebar"
+          >
+            <PanelLeftClose size={18} />
+          </Button>
+        ) : null}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
@@ -99,8 +111,8 @@ export function SessionHeader({
             sessions={sessions}
             selectedValue={selectedValue}
             canSelectLive={canSelectLive}
-            onSessionChange={selectSession}
-            onNewSession={onNewSession}
+            onExpand={() => onCollapsedChange(false)}
+            onRunChange={selectRun}
           />
         ) : (
           <ExpandedSessions
@@ -108,12 +120,12 @@ export function SessionHeader({
             selectedValue={selectedValue}
             canSelectLive={canSelectLive}
             liveSessionId={liveSessionId}
+            liveRunId={liveRunId}
             liveTelemetry={liveTelemetry}
             livePackets={livePackets}
             liveBadPackets={liveBadPackets}
             liveLastPacketAt={liveLastPacketAt}
-            onSessionChange={selectSession}
-            onNewSession={onNewSession}
+            onRunChange={selectRun}
           />
         )}
       </div>
@@ -126,53 +138,69 @@ function ExpandedSessions({
   selectedValue,
   canSelectLive,
   liveSessionId,
+  liveRunId,
   liveTelemetry,
   livePackets,
   liveBadPackets,
   liveLastPacketAt,
-  onSessionChange,
-  onNewSession
+  onRunChange
 }: {
-  sessions: SessionSummary[];
-  selectedValue: SessionSelection | "__none";
+  sessions: SessionWithRuns[];
+  selectedValue: RunSelection | "__none";
   canSelectLive: boolean;
   liveSessionId?: string;
+  liveRunId?: string;
   liveTelemetry?: Telemetry | null;
   livePackets?: number;
   liveBadPackets?: number;
   liveLastPacketAt?: number | null;
-  onSessionChange: (sessionId: SessionSelection) => void;
-  onNewSession: () => void | Promise<void>;
+  onRunChange: (runId: RunSelection | "__none") => void;
 }) {
+  const [expandedSessionIds, setExpandedSessionIds] = React.useState<Set<string>>(() => new Set(sessions.slice(0, 2).map(({ session }) => session.id)));
+
+  React.useEffect(() => {
+    setExpandedSessionIds((current) => {
+      const next = new Set(current);
+      for (const group of sessions) {
+        if (group.runs.some((run) => run.id === selectedValue)) next.add(group.session.id);
+      }
+      if (next.size === 0 && sessions[0]) next.add(sessions[0].session.id);
+      return next;
+    });
+  }, [selectedValue, sessions]);
+
+  function toggleSession(sessionId: string) {
+    setExpandedSessionIds((current) => {
+      const next = new Set(current);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+  }
+
   return (
     <div className="grid gap-5">
-      <div className="px-2">
-        <Button className="h-9 w-full justify-start gap-2 bg-white/10 text-[#f2f2f2] hover:bg-white/14" type="button" onClick={onNewSession}>
-          <Plus size={16} />
-          New session
-        </Button>
-      </div>
-
-      <div className="grid gap-1">
-        <div className="px-3 pb-1 text-xs font-medium text-[#8e8e8e]">Telemetry</div>
-        {canSelectLive ? (
+      {canSelectLive ? (
+        <div className="grid gap-1">
+          <div className="px-3 pb-1 text-xs font-medium text-[#8e8e8e]">Live</div>
           <button
             className={cn(
               "w-full rounded-lg px-3 py-2.5 text-left transition hover:bg-white/8",
               selectedValue === "live" ? "bg-white/10 text-white" : "text-[#d0d0d0]"
             )}
             type="button"
-            onClick={() => onSessionChange("live")}
+            onClick={() => onRunChange("live")}
           >
             <div className="flex items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
                 <Radio size={15} />
-                <span className="truncate">Live session</span>
+                <span className="truncate">Live telemetry</span>
               </div>
               {selectedValue === "live" ? <Check size={15} /> : <Badge className="h-5 bg-[#4cc38a]/15 text-[#70e0a6]">Live</Badge>}
             </div>
             <div className="mt-1 truncate pl-6 text-xs text-[#8f8f8f]">
-              {liveSessionId ? shortSessionId(liveSessionId) : "Waiting for telemetry"}
+              {liveRunId ? `Run ${shortSessionId(liveRunId)}` : "Waiting for run"}
+              {liveSessionId ? ` / Session ${shortSessionId(liveSessionId)}` : ""}
             </div>
             <div className="mt-2 grid grid-cols-3 gap-2 pl-6 text-xs text-[#8f8f8f]">
               <span>{(livePackets ?? 0).toLocaleString()} pkt</span>
@@ -190,41 +218,57 @@ function ExpandedSessions({
                 : "No car telemetry"}
             </div>
           </button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
 
       <div className="grid gap-1">
         <div className="px-3 pb-1 text-xs font-medium text-[#8e8e8e]">Sessions</div>
-        {sessions.map((session) => {
-          const isSelected = selectedValue === session.id;
+        {sessions.map(({ session, runs }) => {
+          const isExpanded = expandedSessionIds.has(session.id);
+          const selectedInside = runs.some((run) => run.id === selectedValue);
           return (
-            <button
-              key={session.id}
-              className={cn(
-                "w-full rounded-lg px-3 py-2.5 text-left transition hover:bg-white/8",
-                isSelected ? "bg-white/10 text-white" : "text-[#d0d0d0]"
-              )}
-              type="button"
-              onClick={() => onSessionChange(session.id)}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0 truncate text-sm font-medium">{formatSessionTime(session.startedAt)}</div>
-                {isSelected ? <Check size={15} /> : null}
-              </div>
-              <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-[#8f8f8f]">
-                <Car size={13} />
-                <span className="truncate">{formatCar(session)}</span>
-              </div>
-              <div className="mt-2 flex items-center gap-3 text-xs text-[#8f8f8f]">
-                <span>{session.packetCount.toLocaleString()} pkt</span>
-                <span>{formatDuration(session)}</span>
-                <span>{session.badPacketCount.toLocaleString()} bad</span>
-              </div>
-              <div className="mt-1 flex items-center gap-2 text-xs text-[#8f8f8f]">
-                <Clock size={13} />
-                <span className="truncate">{shortSessionId(session.id)}</span>
-              </div>
-            </button>
+            <div key={session.id} className="grid gap-1">
+              <button
+                className={cn(
+                  "w-full rounded-lg px-2.5 py-2 text-left transition hover:bg-white/8",
+                  selectedInside ? "bg-white/[0.07] text-white" : "text-[#d0d0d0]"
+                )}
+                type="button"
+                onClick={() => toggleSession(session.id)}
+                aria-expanded={isExpanded}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                    <span className="truncate text-sm font-medium">{formatSessionTime(session.startedAt)}</span>
+                  </div>
+                  <Badge className="h-5 bg-white/8 text-[#bdbdbd]">{runs.length}</Badge>
+                </div>
+                <div className="mt-1 flex items-center gap-3 pl-6 text-xs text-[#8f8f8f]">
+                  <span>{session.packetCount.toLocaleString()} pkt</span>
+                  <span>{formatDuration(session)}</span>
+                  <span>{session.badPacketCount.toLocaleString()} bad</span>
+                </div>
+                <div className="mt-1 flex items-center gap-2 pl-6 text-xs text-[#8f8f8f]">
+                  <Clock size={13} />
+                  <span className="truncate">{shortSessionId(session.id)}</span>
+                </div>
+              </button>
+
+              {isExpanded ? (
+                <div className="grid gap-1 pl-4">
+                  {runs.map((run, index) => (
+                    <RunButton
+                      key={run.id}
+                      run={run}
+                      index={runs.length - index}
+                      isSelected={selectedValue === run.id}
+                      onSelect={() => onRunChange(run.id)}
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </div>
           );
         })}
 
@@ -236,23 +280,73 @@ function ExpandedSessions({
   );
 }
 
+function RunButton({
+  run,
+  index,
+  isSelected,
+  onSelect
+}: {
+  run: RunSummary;
+  index: number;
+  isSelected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      className={cn(
+        "w-full rounded-lg px-3 py-2.5 text-left transition hover:bg-white/8",
+        isSelected ? "bg-white/10 text-white" : "text-[#d0d0d0]"
+      )}
+      type="button"
+      onClick={onSelect}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0 truncate text-sm font-medium">Run {index}</div>
+        {isSelected ? <Check size={15} /> : <span className="text-xs text-[#8f8f8f]">{splitReasonLabel(run.splitReason)}</span>}
+      </div>
+      <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-[#8f8f8f]">
+        <Car size={13} />
+        <span className="truncate">{formatCar(run)}</span>
+      </div>
+      <div className="mt-2 flex items-center gap-3 text-xs text-[#8f8f8f]">
+        <span>{run.packetCount.toLocaleString()} pkt</span>
+        <span>{formatDuration(run)}</span>
+        <span>{run.badPacketCount.toLocaleString()} bad</span>
+      </div>
+      <div className="mt-1 flex items-center gap-2 text-xs text-[#8f8f8f]">
+        <Clock size={13} />
+        <span className="truncate">{shortSessionId(run.id)}</span>
+      </div>
+    </button>
+  );
+}
+
 function CollapsedSessions({
   sessions,
   selectedValue,
   canSelectLive,
-  onSessionChange,
-  onNewSession
+  onExpand,
+  onRunChange
 }: {
-  sessions: SessionSummary[];
-  selectedValue: SessionSelection | "__none";
+  sessions: SessionWithRuns[];
+  selectedValue: RunSelection | "__none";
   canSelectLive: boolean;
-  onSessionChange: (sessionId: SessionSelection) => void;
-  onNewSession: () => void | Promise<void>;
+  onExpand: () => void;
+  onRunChange: (runId: RunSelection | "__none") => void;
 }) {
+  const visibleRuns = sessions.flatMap(({ runs }) => runs).slice(0, 10);
+
   return (
     <div className="flex flex-col items-center gap-2">
-      <Button className="size-10 bg-white/10 text-[#f2f2f2] hover:bg-white/14" size="icon" type="button" onClick={onNewSession} aria-label="New session">
-        <Plus size={17} />
+      <Button
+        className="size-10 text-[#b6b6b6] hover:bg-white/10 hover:text-white"
+        variant="ghost"
+        size="icon"
+        type="button"
+        onClick={onExpand}
+        aria-label="Expand sidebar"
+      >
+        <PanelLeftOpen size={17} />
       </Button>
       {canSelectLive ? (
         <button
@@ -261,24 +355,24 @@ function CollapsedSessions({
             selectedValue === "live" ? "bg-white/10 text-white" : "text-[#bdbdbd]"
           )}
           type="button"
-          onClick={() => onSessionChange("live")}
-          aria-label="Live session"
+          onClick={() => onRunChange("live")}
+          aria-label="Live telemetry"
         >
           <Radio size={17} />
         </button>
       ) : null}
-      {sessions.slice(0, 10).map((session) => (
+      {visibleRuns.map((run) => (
         <button
-          key={session.id}
+          key={run.id}
           className={cn(
             "flex size-10 items-center justify-center rounded-lg text-xs font-medium transition hover:bg-white/8",
-            selectedValue === session.id ? "bg-white/10 text-white" : "text-[#bdbdbd]"
+            selectedValue === run.id ? "bg-white/10 text-white" : "text-[#bdbdbd]"
           )}
           type="button"
-          onClick={() => onSessionChange(session.id)}
-          aria-label={`Session ${shortSessionId(session.id)}`}
+          onClick={() => onRunChange(run.id)}
+          aria-label={`Run ${shortSessionId(run.id)}`}
         >
-          {new Date(session.startedAt).getDate()}
+          {new Date(run.startedAt).getDate()}
         </button>
       ))}
     </div>

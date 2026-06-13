@@ -77,21 +77,21 @@ export function BehaviorPanel({ samples }: { samples: Telemetry[] }) {
   const summary = React.useMemo(() => summarizeTuningBehavior(samples), [samples]);
 
   return (
-    <div className="grid gap-[18px]">
-      <TelemetryGroup title="Tuning balance" icon={<BarChart3 size={18} />}>
+    <div className="grid h-full min-h-0 min-w-0">
+      <TelemetryGroup title="Tuning balance" icon={<BarChart3 size={18} />} className="min-h-0">
         {summary.sampleCount < 2 ? (
-          <div className="rounded-lg border border-white/10 bg-white/[0.035] p-4 text-sm leading-5 text-[#b5bfb9]">
+          <div className="text-sm leading-5 text-[#b5bfb9]">
             No cornering samples yet.
           </div>
         ) : (
           <>
-            <dl className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
+            <dl className="grid grid-cols-2 gap-x-5 gap-y-2 md:grid-cols-4">
               <DataCell label="Corner samples" value={summary.sampleCount} />
               <DataCell label="Analyzed time" value={formatBehaviorDuration(summary.totalMilliseconds)} />
               <DataCell label="Distance" value={summary.totalDistanceMeters} suffix=" m" precision={0} />
               <DataCell label="Avg speed" value={summary.avgSpeedKmh} suffix=" km/h" precision={0} />
             </dl>
-            <div className="grid gap-3">
+            <div className="grid min-h-0 grid-cols-1 gap-3 xl:grid-cols-3">
               {summary.phases.map((phase) => (
                 <TuningPhaseCard key={phase.id} phase={phase} />
               ))}
@@ -107,7 +107,7 @@ function TuningPhaseCard({ phase }: { phase: TuningPhaseSummary }) {
   const tendency = tendencyCopy(phase.tendency);
 
   return (
-    <section className="grid gap-3 rounded-lg border border-white/10 bg-white/[0.035] p-3">
+    <section className="grid min-w-0 gap-3 border-t border-white/[0.08] pt-3">
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: phase.color }} />
@@ -121,7 +121,7 @@ function TuningPhaseCard({ phase }: { phase: TuningPhaseSummary }) {
 
       <BalanceMeter score={phase.balanceScore} />
 
-      <dl className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5">
         <TuningMetric label="Front angle" value={phase.frontAngle} precision={2} tone={phase.tendency === "understeer" ? "warn" : "default"} />
         <TuningMetric label="Rear angle" value={phase.rearAngle} precision={2} tone={phase.tendency === "oversteer" ? "warn" : "default"} />
         <TuningMetric label="Front slip" value={phase.frontSlip} precision={2} tone={phase.tendency === "understeer" ? "warn" : "default"} />
@@ -159,9 +159,9 @@ function TuningMetric({
   tone?: "default" | "ok" | "warn" | "alert";
 }) {
   return (
-    <div className="min-w-0 rounded-md border border-white/10 bg-[#101312]/70 p-2">
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-baseline gap-2 border-b border-white/[0.06] py-1">
       <dt className="truncate text-[9px] font-black uppercase leading-none tracking-wide text-[#9ba6a1]">{label}</dt>
-      <dd className={`mt-1 truncate text-xs font-black leading-tight tabular-nums ${metricToneClass(tone)}`}>
+      <dd className={`text-right text-xs font-black leading-tight tabular-nums ${metricToneClass(tone)}`}>
         {formatValue(value, { precision })}{suffix}
       </dd>
     </div>

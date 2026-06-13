@@ -1,12 +1,12 @@
 import * as React from "react";
-import { createNewSession, fetchSessionDetail, fetchSessions } from "@/services/api";
-import type { SessionDetail, SessionSelection, SessionSummary } from "@/types/telemetry";
+import { fetchRunDetail, fetchSessions } from "@/services/api";
+import type { RunDetail, RunSelection, SessionWithRuns } from "@/types/telemetry";
 
 export function useSessions() {
-  const [sessions, setSessions] = React.useState<SessionSummary[]>([]);
-  const [selectedSessionId, setSelectedSessionId] = React.useState<SessionSelection>("live");
-  const [sessionDetail, setSessionDetail] = React.useState<SessionDetail | null>(null);
-  const [isSessionStreaming, setIsSessionStreaming] = React.useState(false);
+  const [sessions, setSessions] = React.useState<SessionWithRuns[]>([]);
+  const [selectedRunId, setSelectedRunId] = React.useState<RunSelection>("live");
+  const [runDetail, setRunDetail] = React.useState<RunDetail | null>(null);
+  const [isRunStreaming, setIsRunStreaming] = React.useState(false);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -24,41 +24,40 @@ export function useSessions() {
   }, []);
 
   React.useEffect(() => {
-    if (selectedSessionId === "live") {
-      setSessionDetail(null);
-      setIsSessionStreaming(false);
+    if (selectedRunId === "live") {
+      setRunDetail(null);
+      setIsRunStreaming(false);
       return;
     }
 
     let cancelled = false;
-    setSessionDetail(null);
-    setIsSessionStreaming(true);
+    setRunDetail(null);
+    setIsRunStreaming(true);
 
-    fetchSessionDetail(selectedSessionId)
+    fetchRunDetail(selectedRunId)
       .then((detail) => {
-        if (!cancelled) setSessionDetail(detail);
+        if (!cancelled) setRunDetail(detail);
       })
       .catch((error) => {
-        console.warn(`Session load failed: ${error instanceof Error ? error.message : String(error)}`);
-        if (!cancelled) setSessionDetail(null);
+        console.warn(`Run load failed: ${error instanceof Error ? error.message : String(error)}`);
+        if (!cancelled) setRunDetail(null);
       })
       .finally(() => {
-        if (!cancelled) setIsSessionStreaming(false);
+        if (!cancelled) setIsRunStreaming(false);
       });
 
     return () => {
       cancelled = true;
-      setIsSessionStreaming(false);
+      setIsRunStreaming(false);
     };
-  }, [selectedSessionId]);
+  }, [selectedRunId]);
 
-  async function startNewSession() {
-    const created = await createNewSession();
-    const nextSessions = await fetchSessions();
-    setSessions(nextSessions);
-    setSelectedSessionId(created ? "live" : nextSessions[0]?.id ?? "live");
-    return created;
-  }
-
-  return { sessions, setSessions, selectedSessionId, setSelectedSessionId, sessionDetail, isSessionStreaming, startNewSession };
+  return {
+    sessions,
+    setSessions,
+    selectedRunId,
+    setSelectedRunId,
+    runDetail,
+    isRunStreaming
+  };
 }

@@ -140,6 +140,7 @@ export type AppState = {
   summary: Summary | null;
   udpPort: number;
   sessionId?: string;
+  runId?: string;
 };
 
 export type PathSample = {
@@ -208,7 +209,8 @@ export type TireMfdTire = {
 export type TelemetryValue = number | string | null | undefined;
 export type TelemetryFieldName = Extract<keyof Telemetry, string>;
 export type RightPanelTab = "car" | "behavior" | "data";
-export type SessionSelection = "live" | string;
+export type RunSelection = "live" | string;
+export type SessionSelection = RunSelection;
 export type SessionSummary = {
   id: string;
   startedAt: number;
@@ -216,17 +218,34 @@ export type SessionSummary = {
   endedAt: number | null;
   packetCount: number;
   badPacketCount: number;
+  runCount: number;
   lastSource: string | null;
+};
+export type RunSummary = {
+  id: string;
+  sessionId: string;
+  startedAt: number;
+  lastPacketAt: number | null;
+  endedAt: number | null;
+  packetCount: number;
+  badPacketCount: number;
+  lastSource: string | null;
+  splitReason: string | null;
   carOrdinal: number | null;
   carClass: number | null;
   carPerformanceIndex: number | null;
   drivetrainType: number | null;
 };
-export type SessionDetail = {
+export type SessionWithRuns = {
   session: SessionSummary;
+  runs: RunSummary[];
+};
+export type RunDetail = {
+  run: RunSummary;
   samples: Telemetry[];
   summary: Summary | null;
 };
+export type SessionDetail = RunDetail;
 export type DocTelemetryField = {
   name: TelemetryFieldName;
   label: string;

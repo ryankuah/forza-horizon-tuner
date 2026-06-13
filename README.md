@@ -11,7 +11,6 @@ Forza Horizon Tuner is a local desktop telemetry dashboard and setup advisor for
 - Track map projection using `PositionX` and `PositionZ` over the bundled map reveal image.
 - Car, input, tire, suspension, slip, packet, and session telemetry panels.
 - First-pass tuning advice based on slip balance, tire temperature balance, suspension compression, and throttle wheelspin.
-- Built-in simulator for testing without the game running.
 - Desktop packaging with `electron-builder` and GitHub Releases support through `electron-updater`.
 
 ## Tech Stack
@@ -41,7 +40,7 @@ npm install
 Run the Electron app:
 
 ```bash
-npm run dev
+npm start
 ```
 
 The Electron main process starts the telemetry runtime automatically. The app does not require a browser dev server, WebSocket server, or external API service.
@@ -59,32 +58,16 @@ The app listens on UDP port `9999` by default. Avoid ports `5200` through `5300`
 To use a different port, set `FORZA_UDP_PORT` before starting the app:
 
 ```bash
-FORZA_UDP_PORT=9998 npm run dev
+FORZA_UDP_PORT=9998 npm start
 ```
-
-## Testing Without The Game
-
-Run the app with simulated telemetry:
-
-```bash
-npm run simulate
-```
-
-This starts the same Electron app and runtime, but feeds generated telemetry into the dashboard.
 
 ## Available Scripts
 
 ```bash
-npm run dev
+npm start
 ```
 
 Builds the renderer and Electron main process, rebuilds native Electron dependencies, and starts the desktop app.
-
-```bash
-npm run simulate
-```
-
-Starts the app with simulated telemetry.
 
 ```bash
 npm run typecheck

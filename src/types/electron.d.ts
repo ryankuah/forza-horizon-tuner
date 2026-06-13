@@ -1,14 +1,13 @@
 export {};
 
-import type { AppState, SessionDetail, SessionSummary } from "./telemetry";
+import type { AppState, RunDetail, SessionWithRuns } from "./telemetry";
 
 declare global {
   interface Window {
     telemetryApp: {
       getSnapshot: () => Promise<AppState>;
-      getSessions: () => Promise<SessionSummary[]>;
-      getSessionDetail: (sessionId: string) => Promise<SessionDetail | null>;
-      createNewSession: () => Promise<boolean>;
+      getSessions: () => Promise<SessionWithRuns[]>;
+      getRunDetail: (runId: string) => Promise<RunDetail | null>;
       onTelemetryState: (callback: (_event: unknown, state: AppState) => void) => () => void;
       checkForUpdates: () => Promise<unknown>;
       onUpdateAvailable: (callback: () => void) => void;

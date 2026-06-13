@@ -25,9 +25,9 @@ export function TelemetryGroup({
   className?: string;
 }) {
   return (
-    <section className={`grid gap-3 ${className}`}>
+    <section className={`grid min-w-0 gap-3 ${className}`}>
       <SectionTitle icon={icon} compact>{title}</SectionTitle>
-      <div className="grid gap-[18px]">
+      <div className="grid min-w-0 gap-4">
         {children}
       </div>
     </section>
@@ -48,9 +48,9 @@ export function DataCell({
   boolean?: boolean;
 }) {
   return (
-    <div className="min-w-0 rounded-lg border border-white/10 bg-white/[0.035] p-3">
-      <dt className={`${labelClass} mb-1.5`}>{label}</dt>
-      <dd className="overflow-hidden text-ellipsis whitespace-nowrap font-bold text-[#f5f7f6]">
+    <div className="grid min-w-0 grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] items-baseline gap-3 border-b border-white/[0.06] py-1.5">
+      <dt className={`${labelClass} min-w-0 truncate`}>{label}</dt>
+      <dd className="min-w-0 break-words text-right font-bold text-[#f5f7f6]">
         {formatValue(value, { precision, boolean })}{boolean ? "" : suffix}
       </dd>
     </div>

@@ -8,22 +8,23 @@ import { SessionHeader } from "@/features/session/SessionHeader";
 import { useLiveTelemetry } from "@/hooks/useLiveTelemetry";
 import { useSessions } from "@/hooks/useSessions";
 import { useTelemetryPlayback } from "@/hooks/useTelemetryPlayback";
-import type { AppState, RightPanelTab, SessionSelection, SessionDetail, Telemetry } from "@/types/telemetry";
+import type { AppState, RightPanelTab, RunDetail, RunSelection, Telemetry } from "@/types/telemetry";
 
 const EMPTY_TELEMETRY_SAMPLES: Telemetry[] = [];
 
-function buildHistoricalState(liveState: AppState, detail: SessionDetail | null, telemetry: Telemetry | null): AppState {
-  const session = detail?.session;
+function buildHistoricalState(liveState: AppState, detail: RunDetail | null, telemetry: Telemetry | null): AppState {
+  const run = detail?.run;
   return {
     ...liveState,
     connected: false,
-    packets: session?.packetCount ?? 0,
-    badPackets: session?.badPacketCount ?? 0,
-    lastPacketAt: session?.lastPacketAt ?? null,
-    lastSource: session?.lastSource ?? "stored session",
+    packets: run?.packetCount ?? 0,
+    badPackets: run?.badPacketCount ?? 0,
+    lastPacketAt: run?.lastPacketAt ?? null,
+    lastSource: run?.lastSource ?? "stored run",
     telemetry,
     summary: detail?.summary ?? null,
-    sessionId: session?.id
+    sessionId: run?.sessionId,
+    runId: run?.id
   };
 }
 
@@ -33,25 +34,26 @@ function sampleAtIndex(samples: Telemetry[], index: number | null, fallback?: Te
 }
 
 export function App() {
-  const { state, path, setPath, samples, setSamples } = useLiveTelemetry();
-  const { sessions, selectedSessionId, setSelectedSessionId, sessionDetail, isSessionStreaming, startNewSession } = useSessions();
+  const { state, path, samples } = useLiveTelemetry();
+  const { sessions, selectedRunId, setSelectedRunId, runDetail, isRunStreaming } = useSessions();
   const [hoverIndex, setHoverIndex] = React.useState<number | null>(null);
   const [rightPanelTab, setRightPanelTab] = React.useState<RightPanelTab>("car");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = React.useState(false);
 
   React.useEffect(() => {
-    if (state.connected || selectedSessionId !== "live") return;
-    if (sessions[0]) setSelectedSessionId(sessions[0].id);
-  }, [selectedSessionId, sessions, state.connected, setSelectedSessionId]);
+    if (state.connected || selectedRunId !== "live") return;
+    const latestRun = sessions[0]?.runs[0];
+    if (latestRun) setSelectedRunId(latestRun.id);
+  }, [selectedRunId, sessions, state.connected, setSelectedRunId]);
 
-  const historicalPath = React.useMemo(() => buildPathFromTelemetry(sessionDetail?.samples ?? []), [sessionDetail]);
-  const displayPath = selectedSessionId === "live" ? path : historicalPath;
-  const displaySamples = selectedSessionId === "live" ? samples : sessionDetail?.samples ?? EMPTY_TELEMETRY_SAMPLES;
+  const historicalPath = React.useMemo(() => buildPathFromTelemetry(runDetail?.samples ?? []), [runDetail]);
+  const displayPath = selectedRunId === "live" ? path : historicalPath;
+  const displaySamples = selectedRunId === "live" ? samples : runDetail?.samples ?? EMPTY_TELEMETRY_SAMPLES;
   const playback = useTelemetryPlayback({
     displayPath,
     samples: displaySamples,
-    selectedSessionId,
-    isSessionStreaming
+    selectedSessionId: selectedRunId,
+    isSessionStreaming: isRunStreaming
   });
 
   React.useEffect(() => {
@@ -65,26 +67,18 @@ export function App() {
   const telemetry = hoverSample
     ?? playheadSample
     ?? latestPathSample?.telemetry
-    ?? (selectedSessionId === "live" ? state.telemetry : sessionDetail?.samples.at(-1) ?? null);
-  const displayState = selectedSessionId === "live" ? state : buildHistoricalState(state, sessionDetail, telemetry);
-  const selectedSessionLabel = selectedSessionId === "live"
+    ?? (selectedRunId === "live" ? state.telemetry : runDetail?.samples.at(-1) ?? null);
+  const displayState = selectedRunId === "live" ? state : buildHistoricalState(state, runDetail, telemetry);
+  const selectedSessionLabel = selectedRunId === "live"
     ? "Live telemetry"
-    : sessionDetail?.session
-      ? `Session ${new Date(sessionDetail.session.startedAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`
-      : "Saved session";
+    : runDetail?.run
+      ? `Run ${new Date(runDetail.run.startedAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`
+      : "Saved run";
 
-  function handleSessionChange(sessionId: SessionSelection) {
-    setSelectedSessionId(sessionId);
+  function handleRunChange(runId: RunSelection) {
+    setSelectedRunId(runId);
     setHoverIndex(null);
     playback.resetPlayback();
-  }
-
-  async function handleNewSession() {
-    await startNewSession();
-    setHoverIndex(null);
-    playback.resetPlayback();
-    setPath([]);
-    setSamples([]);
   }
 
   function handleScrubPathIndex(index: number | null) {
@@ -102,17 +96,17 @@ export function App() {
       >
         <SessionHeader
           sessions={sessions}
-          selectedSessionId={selectedSessionId}
-          canSelectLive={displayState.connected}
-          liveSessionId={displayState.sessionId}
+          selectedRunId={selectedRunId}
+          canSelectLive={state.connected}
+          liveSessionId={state.sessionId}
+          liveRunId={state.runId}
           liveTelemetry={state.telemetry}
           livePackets={state.packets}
           liveBadPackets={state.badPackets}
           liveLastPacketAt={state.lastPacketAt}
           isCollapsed={isSidebarCollapsed}
           onCollapsedChange={setIsSidebarCollapsed}
-          onSessionChange={handleSessionChange}
-          onNewSession={handleNewSession}
+          onRunChange={handleRunChange}
         />
 
         <main className="flex min-w-0 flex-1 flex-col bg-[#171717]">
@@ -128,7 +122,7 @@ export function App() {
               </div>
             </div>
             <div className="flex items-center gap-3 text-xs text-[#8f8f8f]">
-              <span>{displayState.sessionId ? displayState.sessionId.slice(0, 8) : "No session"}</span>
+              <span>{displayState.runId ? displayState.runId.slice(0, 8) : "No run"}</span>
             </div>
           </header>
 

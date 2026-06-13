@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { createTelemetryDatabase } from "./database";
 import { enrichTelemetry, parseForzaPacket, type RawTelemetry } from "./forzaPacket";
 import { buildTuningAdvice, TelemetryWindow } from "./tuning";
-import type { Advice, AppState, SessionDetail, SessionSummary, Summary, Telemetry } from "../src/types/telemetry";
+import type { Advice, AppState, RunDetail, SessionWithRuns, Summary, Telemetry } from "../src/types/telemetry";
 
 type RuntimeState = {
   connected: boolean;
@@ -24,6 +24,11 @@ type PendingSession = {
   persisted: boolean;
 };
 
+type PendingRun = PendingSession & {
+  sessionId: string;
+  splitReason: string;
+};
+
 type TelemetryInput = {
   telemetry: Telemetry;
   receivedAt: number;
@@ -40,7 +45,7 @@ type RuntimeOptions = {
 export function createTelemetryRuntime(options: RuntimeOptions = {}) {
   const udpPort = options.udpPort ?? Number(process.env.FORZA_UDP_PORT || 9999);
   const database = createTelemetryDatabase(options.dbPath);
-  const removedEmptySessions = database.deleteEmptySessions();
+  const removedEmptySessions = database.deleteEmptyRunsAndSessions();
   const events = new EventEmitter();
   const udp = dgram.createSocket("udp4");
   const state: RuntimeState = {
@@ -55,6 +60,7 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
   };
 
   let currentSession = createPendingSession();
+  let currentRun = createPendingRun(currentSession.id, currentSession.startedAt, "connection");
   let telemetryWindow = new TelemetryWindow();
   let staleTimer: NodeJS.Timeout | null = null;
   let simulatorTimer: NodeJS.Timeout | null = null;
@@ -95,44 +101,37 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
       localIps: localIps(),
       telemetry: state.last,
       summary: state.summary,
-      advice: state.advice
+      advice: state.advice,
+      runId: currentRun.id
     };
   }
 
-  function listSessions(): { currentSessionId: string; sessions: SessionSummary[] } {
+  function listSessions(): { currentSessionId: string; currentRunId: string; sessions: SessionWithRuns[] } {
     return {
       currentSessionId: currentSession.id,
+      currentRunId: currentRun.id,
       sessions: database.listSessions()
     };
   }
 
-  function getSessionDetail(sessionId: string, limit = 250000): SessionDetail | null {
-    const session = database.getSession(sessionId);
-    if (!session) return null;
+  function getRunDetail(runId: string, limit = 250000): RunDetail | null {
+    const run = database.getRun(runId);
+    if (!run) return null;
 
-    const samples = database.getSamples(sessionId, clampSampleLimit(limit));
+    const samples = database.getSamples(runId, clampSampleLimit(limit));
     return {
-      session,
+      run,
       samples,
       summary: summarizeSamples(samples)
     };
   }
 
-  function getSession(sessionId: string) {
-    return database.getSession(sessionId);
+  function getRun(runId: string) {
+    return database.getRun(runId);
   }
 
-  function iterateSampleJson(sessionId: string) {
-    return database.iterateSampleJson(sessionId);
-  }
-
-  function createNewSession() {
-    startNewSession("manual", Date.now());
-    broadcast();
-    return {
-      currentSessionId: currentSession.id,
-      session: database.getSession(currentSession.id)
-    };
+  function iterateSampleJson(runId: string) {
+    return database.iterateSampleJson(runId);
   }
 
   function logStartup() {
@@ -140,6 +139,7 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     console.log("Forza Horizon Tuner");
     console.log(`Session DB:     ${database.path}`);
     console.log(`Session ID:     ${currentSession.id} (pending)`);
+    console.log(`Run ID:         ${currentRun.id} (pending)`);
     if (removedEmptySessions > 0) {
       console.log(`Cleaned empty sessions: ${removedEmptySessions}`);
     }
@@ -162,13 +162,14 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
 
     try {
       const telemetry = enrichTelemetry(parseForzaPacket(message), receivedAt);
-      maybeStartNewSessionForTelemetry(telemetry, receivedAt);
+      maybeStartNewSessionForReconnect(receivedAt);
+      maybeStartNewRunForTelemetry(telemetry, receivedAt);
       handleTelemetry({ telemetry, receivedAt, source, rawPacket: message });
     } catch (error) {
       state.badPackets += 1;
-      if (currentSession.persisted) {
+      if (currentRun.persisted) {
         database.recordBadPacket({
-          sessionId: currentSession.id,
+          runId: currentRun.id,
           receivedAt,
           source,
           rawPacket: message,
@@ -179,9 +180,28 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     }
   }
 
-  function maybeStartNewSessionForTelemetry(telemetry: Telemetry, receivedAt: number) {
-    if (telemetry.IsRaceOn === 1 && state.last?.IsRaceOn === 1 && carIdentityChanged(state.last, telemetry)) {
-      startNewSession("car_change", receivedAt);
+  function maybeStartNewSessionForReconnect(receivedAt: number) {
+    if (!state.lastPacketAt) return;
+    if (state.connected) return;
+    if (receivedAt - state.lastPacketAt <= 2500) return;
+    startNewSession("udp_reconnect", receivedAt);
+  }
+
+  function maybeStartNewRunForTelemetry(telemetry: Telemetry, receivedAt: number) {
+    if (telemetry.IsRaceOn !== 1 || state.last?.IsRaceOn !== 1) return;
+
+    if (state.lastPacketAt && receivedAt - state.lastPacketAt > 15000) {
+      startNewRun("afk", receivedAt);
+      return;
+    }
+
+    if (carIdentityChanged(state.last, telemetry)) {
+      startNewRun("car_change", receivedAt);
+      return;
+    }
+
+    if (telemetry.TimestampMS + 100 < state.last.TimestampMS) {
+      startNewRun("telemetry_reset", receivedAt);
     }
   }
 
@@ -189,7 +209,12 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     if (currentSession.persisted) {
       database.endSession(currentSession.id, startedAt);
     }
+    if (currentRun.persisted) {
+      database.endRun(currentRun.id, startedAt);
+    }
+
     currentSession = createPendingSession(startedAt);
+    currentRun = createPendingRun(currentSession.id, startedAt, reason);
     telemetryWindow = new TelemetryWindow();
     state.connected = false;
     state.packets = 0;
@@ -202,13 +227,31 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     console.log(`Prepared telemetry session ${currentSession.id} (${reason})`);
   }
 
-  function ensureCurrentSession(receivedAt: number) {
+  function startNewRun(reason: string, startedAt = Date.now()) {
+    if (currentRun.persisted) {
+      database.endRun(currentRun.id, startedAt);
+    }
+    currentRun = createPendingRun(currentSession.id, startedAt, reason);
+    telemetryWindow = new TelemetryWindow();
+    state.packets = 0;
+    state.badPackets = 0;
+    state.summary = null;
+    state.advice = buildTuningAdvice(null, null);
+    console.log(`Prepared telemetry run ${currentRun.id} (${reason})`);
+  }
+
+  function ensureCurrentRun(receivedAt: number) {
     if (!currentSession.persisted) {
       database.startSession(currentSession.startedAt, currentSession.id);
       currentSession.persisted = true;
       console.log(`Started telemetry session ${currentSession.id}`);
     }
-    return currentSession;
+    if (!currentRun.persisted) {
+      database.startRun(currentSession.id, currentRun.startedAt, currentRun.id, currentRun.splitReason);
+      currentRun.persisted = true;
+      console.log(`Started telemetry run ${currentRun.id}`);
+    }
+    return currentRun;
   }
 
   function handleTelemetry({ telemetry, receivedAt, source, rawPacket = null }: TelemetryInput) {
@@ -227,9 +270,9 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     telemetryWindow.add(telemetry);
     state.summary = telemetryWindow.summary();
     state.advice = buildTuningAdvice(state.last, state.summary);
-    const session = ensureCurrentSession(receivedAt);
+    const run = ensureCurrentRun(receivedAt);
     database.recordValidPacket({
-      sessionId: session.id,
+      runId: run.id,
       receivedAt,
       source,
       rawPacket,
@@ -257,52 +300,11 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     onState,
     snapshot,
     listSessions,
-    getSession,
-    getSessionDetail,
+    getRun,
+    getRunDetail,
     iterateSampleJson,
-    createNewSession,
     logStartup
   };
-}
-
-function createPendingSession(startedAt = Date.now()): PendingSession {
-  return {
-    id: randomUUID(),
-    startedAt,
-    persisted: false
-  };
-}
-
-function carIdentityChanged(previous: Telemetry, telemetry: Telemetry) {
-  return previous.CarOrdinal !== telemetry.CarOrdinal
-    || previous.CarPerformanceIndex !== telemetry.CarPerformanceIndex
-    || previous.DrivetrainType !== telemetry.DrivetrainType;
-}
-
-function summarizeSamples(samples: Telemetry[]) {
-  const sessionWindow = new TelemetryWindow();
-  for (const sample of samples) {
-    sessionWindow.add(sample);
-  }
-  return sessionWindow.summary();
-}
-
-function clampSampleLimit(value: unknown) {
-  const limit = Number(value || 5000);
-  if (!Number.isFinite(limit)) return 5000;
-  return Math.min(250000, Math.max(1, Math.round(limit)));
-}
-
-function localIps() {
-  const ips: string[] = [];
-  for (const interfaces of Object.values(os.networkInterfaces())) {
-    for (const iface of interfaces || []) {
-      if (iface.family === "IPv4" && !iface.internal) {
-        ips.push(iface.address);
-      }
-    }
-  }
-  return ips;
 }
 
 function startSimulator(handleTelemetry: (input: TelemetryInput) => void) {
@@ -420,4 +422,54 @@ function startSimulator(handleTelemetry: (input: TelemetryInput) => void) {
       source: "simulator"
     });
   }, 50);
+}
+
+function createPendingSession(startedAt = Date.now()): PendingSession {
+  return {
+    id: randomUUID(),
+    startedAt,
+    persisted: false
+  };
+}
+
+function createPendingRun(sessionId: string, startedAt = Date.now(), splitReason = "start"): PendingRun {
+  return {
+    id: randomUUID(),
+    sessionId,
+    startedAt,
+    persisted: false,
+    splitReason
+  };
+}
+
+function carIdentityChanged(previous: Telemetry, telemetry: Telemetry) {
+  return previous.CarOrdinal !== telemetry.CarOrdinal
+    || previous.CarPerformanceIndex !== telemetry.CarPerformanceIndex
+    || previous.DrivetrainType !== telemetry.DrivetrainType;
+}
+
+function summarizeSamples(samples: Telemetry[]) {
+  const sessionWindow = new TelemetryWindow();
+  for (const sample of samples) {
+    sessionWindow.add(sample);
+  }
+  return sessionWindow.summary();
+}
+
+function clampSampleLimit(value: unknown) {
+  const limit = Number(value || 5000);
+  if (!Number.isFinite(limit)) return 5000;
+  return Math.min(250000, Math.max(1, Math.round(limit)));
+}
+
+function localIps() {
+  const ips: string[] = [];
+  for (const interfaces of Object.values(os.networkInterfaces())) {
+    for (const iface of interfaces || []) {
+      if (iface.family === "IPv4" && !iface.internal) {
+        ips.push(iface.address);
+      }
+    }
+  }
+  return ips;
 }

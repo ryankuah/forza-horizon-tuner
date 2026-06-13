@@ -4,13 +4,13 @@ import { randomUUID } from "node:crypto";
 import BetterSqliteDatabase from "better-sqlite3";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import type { SessionSummary, Telemetry } from "../src/types/telemetry";
-import { sessions, telemetryPackets } from "./schema";
+import type { RunSummary, SessionSummary, SessionWithRuns, Telemetry } from "../src/types/telemetry";
+import { runs, sessions, telemetryPackets } from "./schema";
 
 const DEFAULT_DB_PATH = path.join(process.cwd(), "data", "telemetry.sqlite");
 
 type ValidPacketInput = {
-  sessionId: string;
+  runId: string;
   receivedAt: number;
   source: string | null;
   rawPacket?: Buffer | null;
@@ -18,14 +18,29 @@ type ValidPacketInput = {
 };
 
 type BadPacketInput = {
-  sessionId: string;
+  runId: string;
   receivedAt: number;
   source: string | null;
   rawPacket?: Buffer | null;
   error: string;
 };
 
+function tableExists(sqlite: BetterSqliteDatabase.Database, name: string) {
+  return Boolean(sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
+}
+
+function tableColumns(sqlite: BetterSqliteDatabase.Database, name: string) {
+  return new Set((sqlite.prepare(`PRAGMA table_info(${name})`).all() as { name: string }[]).map((column) => column.name));
+}
+
 function createSchema(sqlite: BetterSqliteDatabase.Database) {
+  if (tableExists(sqlite, "sessions") && !tableExists(sqlite, "runs")) {
+    const columns = tableColumns(sqlite, "sessions");
+    if (columns.has("car_ordinal")) {
+      sqlite.exec("ALTER TABLE sessions RENAME TO runs;");
+    }
+  }
+
   sqlite.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
@@ -38,7 +53,20 @@ function createSchema(sqlite: BetterSqliteDatabase.Database) {
       ended_at INTEGER,
       packet_count INTEGER NOT NULL DEFAULT 0,
       bad_packet_count INTEGER NOT NULL DEFAULT 0,
+      run_count INTEGER NOT NULL DEFAULT 0,
+      last_source TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS runs (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      started_at INTEGER NOT NULL,
+      last_packet_at INTEGER,
+      ended_at INTEGER,
+      packet_count INTEGER NOT NULL DEFAULT 0,
+      bad_packet_count INTEGER NOT NULL DEFAULT 0,
       last_source TEXT,
+      split_reason TEXT,
       car_ordinal INTEGER,
       car_class INTEGER,
       car_performance_index INTEGER,
@@ -59,6 +87,42 @@ function createSchema(sqlite: BetterSqliteDatabase.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_telemetry_packets_session_time
       ON telemetry_packets(session_id, received_at);
+
+    CREATE INDEX IF NOT EXISTS idx_runs_session_time
+      ON runs(session_id, started_at);
+  `);
+
+  const runColumns = tableColumns(sqlite, "runs");
+  if (!runColumns.has("session_id")) sqlite.exec("ALTER TABLE runs ADD COLUMN session_id TEXT;");
+  if (!runColumns.has("split_reason")) sqlite.exec("ALTER TABLE runs ADD COLUMN split_reason TEXT;");
+
+  sqlite.exec(`
+    INSERT OR IGNORE INTO sessions (
+      id,
+      started_at,
+      last_packet_at,
+      ended_at,
+      packet_count,
+      bad_packet_count,
+      run_count,
+      last_source
+    )
+    SELECT
+      id,
+      started_at,
+      last_packet_at,
+      ended_at,
+      packet_count,
+      bad_packet_count,
+      1,
+      last_source
+    FROM runs
+    WHERE session_id IS NULL;
+
+    UPDATE runs
+    SET session_id = id,
+        split_reason = COALESCE(split_reason, 'legacy')
+    WHERE session_id IS NULL;
   `);
 }
 
@@ -68,7 +132,7 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
   const sqlite = new BetterSqliteDatabase(dbPath);
   createSchema(sqlite);
 
-  const db = drizzle(sqlite, { schema: { sessions, telemetryPackets } });
+  const db = drizzle(sqlite, { schema: { runs, sessions, telemetryPackets } });
 
   return {
     path: dbPath,
@@ -89,9 +153,34 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
         .run();
     },
 
-    recordValidPacket({ sessionId, receivedAt, source, rawPacket, telemetry }: ValidPacketInput) {
-      db.insert(telemetryPackets).values({
+    startRun(sessionId: string, startedAt = Date.now(), id: string = randomUUID(), splitReason = "start") {
+      db.insert(runs).values({
+        id,
         sessionId,
+        startedAt,
+        lastPacketAt: startedAt,
+        splitReason
+      }).run();
+      db.update(sessions)
+        .set({
+          lastPacketAt: startedAt,
+          runCount: sql`${sessions.runCount} + 1`
+        })
+        .where(eq(sessions.id, sessionId))
+        .run();
+      return { id, sessionId, startedAt };
+    },
+
+    endRun(runId: string, endedAt = Date.now()) {
+      db.update(runs)
+        .set({ endedAt })
+        .where(and(eq(runs.id, runId), isNull(runs.endedAt)))
+        .run();
+    },
+
+    recordValidPacket({ runId, receivedAt, source, rawPacket, telemetry }: ValidPacketInput) {
+      db.insert(telemetryPackets).values({
+        sessionId: runId,
         receivedAt,
         source,
         parseOk: true,
@@ -101,23 +190,32 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
         parseError: null
       }).run();
 
-      db.update(sessions)
+      db.update(runs)
         .set({
           lastPacketAt: receivedAt,
-          packetCount: sql`${sessions.packetCount} + 1`,
+          packetCount: sql`${runs.packetCount} + 1`,
           lastSource: source,
           carOrdinal: telemetry.CarOrdinal,
           carClass: telemetry.CarClass,
           carPerformanceIndex: telemetry.CarPerformanceIndex,
           drivetrainType: telemetry.DrivetrainType
         })
-        .where(eq(sessions.id, sessionId))
+        .where(eq(runs.id, runId))
+        .run();
+
+      db.update(sessions)
+        .set({
+          lastPacketAt: receivedAt,
+          packetCount: sql`${sessions.packetCount} + 1`,
+          lastSource: source
+        })
+        .where(eq(sessions.id, sql`(SELECT session_id FROM runs WHERE id = ${runId})`))
         .run();
     },
 
-    recordBadPacket({ sessionId, receivedAt, source, rawPacket, error }: BadPacketInput) {
+    recordBadPacket({ runId, receivedAt, source, rawPacket, error }: BadPacketInput) {
       db.insert(telemetryPackets).values({
-        sessionId,
+        sessionId: runId,
         receivedAt,
         source,
         parseOk: false,
@@ -127,36 +225,61 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
         parseError: error
       }).run();
 
+      db.update(runs)
+        .set({
+          lastPacketAt: receivedAt,
+          badPacketCount: sql`${runs.badPacketCount} + 1`,
+          lastSource: source
+        })
+        .where(eq(runs.id, runId))
+        .run();
+
       db.update(sessions)
         .set({
           lastPacketAt: receivedAt,
           badPacketCount: sql`${sessions.badPacketCount} + 1`,
           lastSource: source
         })
-        .where(eq(sessions.id, sessionId))
+        .where(eq(sessions.id, sql`(SELECT session_id FROM runs WHERE id = ${runId})`))
         .run();
     },
 
-    listSessions(): SessionSummary[] {
-      return db.select()
+    listSessions(): SessionWithRuns[] {
+      const sessionRows = db.select()
         .from(sessions)
         .where(sql`${sessions.packetCount} > 0`)
         .orderBy(desc(sessions.startedAt))
-        .all();
+        .all() as SessionSummary[];
+
+      if (!sessionRows.length) return [];
+
+      const runRows = db.select()
+        .from(runs)
+        .where(and(
+          inArray(runs.sessionId, sessionRows.map((session) => session.id)),
+          sql`${runs.packetCount} > 0`
+        ))
+        .orderBy(desc(runs.startedAt))
+        .all() as RunSummary[];
+
+      return sessionRows.map((session) => ({
+        session,
+        runs: runRows.filter((run) => run.sessionId === session.id)
+      })).filter((group) => group.runs.length > 0);
     },
 
-    getSession(sessionId: string): SessionSummary | null {
+    getRun(runId: string): RunSummary | null {
       return db.select()
-        .from(sessions)
-        .where(eq(sessions.id, sessionId))
+        .from(runs)
+        .where(eq(runs.id, runId))
         .get() ?? null;
     },
 
-    getSamples(sessionId: string, limit = 5000): Telemetry[] {
+    getSamples(runId: string, limit = 5000): Telemetry[] {
       return db.select({ telemetryJson: telemetryPackets.telemetryJson })
         .from(telemetryPackets)
         .where(and(
-          eq(telemetryPackets.sessionId, sessionId),
+          eq(telemetryPackets.sessionId, runId),
           eq(telemetryPackets.parseOk, true),
           sql`${telemetryPackets.telemetryJson} IS NOT NULL`
         ))
@@ -166,7 +289,7 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
         .map((row) => JSON.parse(row.telemetryJson ?? "{}") as Telemetry);
     },
 
-    iterateSampleJson(sessionId: string): Iterable<{ telemetryJson: string }> {
+    iterateSampleJson(runId: string): Iterable<{ telemetryJson: string }> {
       return sqlite.prepare(`
         SELECT telemetry_json AS telemetryJson
         FROM telemetry_packets
@@ -174,26 +297,38 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
           AND parse_ok = 1
           AND telemetry_json IS NOT NULL
         ORDER BY received_at
-      `).iterate(sessionId) as Iterable<{ telemetryJson: string }>;
+      `).iterate(runId) as Iterable<{ telemetryJson: string }>;
     },
 
-    deleteEmptySessions() {
+    deleteEmptyRunsAndSessions() {
       const cleanup = sqlite.transaction(() => {
+        const emptyRuns = db.select({ id: runs.id })
+          .from(runs)
+          .where(eq(runs.packetCount, 0))
+          .all();
+
+        if (emptyRuns.length) {
+          const emptyRunIds = emptyRuns.map((run) => run.id);
+          db.delete(telemetryPackets)
+            .where(inArray(telemetryPackets.sessionId, emptyRunIds))
+            .run();
+          db.delete(runs)
+            .where(inArray(runs.id, emptyRunIds))
+            .run();
+        }
+
         const emptySessions = db.select({ id: sessions.id })
           .from(sessions)
           .where(eq(sessions.packetCount, 0))
           .all();
 
-        if (!emptySessions.length) return 0;
+        if (emptySessions.length) {
+          db.delete(sessions)
+            .where(inArray(sessions.id, emptySessions.map((session) => session.id)))
+            .run();
+        }
 
-        const emptySessionIds = emptySessions.map((session) => session.id);
-        db.delete(telemetryPackets)
-          .where(inArray(telemetryPackets.sessionId, emptySessionIds))
-          .run();
-        db.delete(sessions)
-          .where(inArray(sessions.id, emptySessionIds))
-          .run();
-        return emptySessionIds.length;
+        return emptyRuns.length + emptySessions.length;
       });
 
       return cleanup();
