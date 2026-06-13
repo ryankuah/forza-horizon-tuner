@@ -209,7 +209,7 @@ export type TireMfdTire = {
 };
 export type TelemetryValue = number | string | null | undefined;
 export type TelemetryFieldName = Extract<keyof Telemetry, string>;
-export type RightPanelTab = "car" | "behavior" | "data";
+export type DashboardTab = "car" | "behavior" | "analysis";
 export type RunSelection = "live" | string;
 export type SessionSelection = RunSelection;
 export type SessionSummary = {

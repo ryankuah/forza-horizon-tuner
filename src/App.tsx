@@ -1,17 +1,20 @@
 import * as React from "react";
-import { CheckCircle2, Gamepad2, MonitorDot, Radio, Settings2, Wifi } from "lucide-react";
+import { BarChart3, CheckCircle2, Gamepad2, Gauge, LineChart, MonitorDot, Radio, Settings2, Wifi } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { LiveInputsPanel } from "@/features/inputs/LiveInputsPanel";
 import { buildPathFromTelemetry } from "@/features/map/pathSamples";
 import { TrackMapPanel } from "@/features/map/TrackMapPanel";
 import { TelemetrySidePanel } from "@/features/dashboard/telemetryVisuals";
+import { BehaviorPanel } from "@/features/dashboard/TuningBehaviorPanel";
+import { PowertrainAnalysisPanel } from "@/features/analysis/PowertrainAnalysisPanel";
 import { CarCatalogPage } from "@/features/cars/CarCatalogPage";
 import { SessionHeader } from "@/features/session/SessionHeader";
 import { useLiveTelemetry } from "@/hooks/useLiveTelemetry";
 import { useSessions } from "@/hooks/useSessions";
 import { useTelemetryPlayback } from "@/hooks/useTelemetryPlayback";
 import { queryCars } from "@/services/api";
-import type { AppState, CarCatalogItem, RightPanelTab, RunDetail, RunSelection, Telemetry } from "@/types/telemetry";
+import type { AppState, CarCatalogItem, DashboardTab, RunDetail, RunSelection, Telemetry } from "@/types/telemetry";
 
 const EMPTY_TELEMETRY_SAMPLES: Telemetry[] = [];
 
@@ -40,7 +43,7 @@ export function App() {
   const { state, path, samples, handleState } = useLiveTelemetry();
   const { sessions, selectedRunId, setSelectedRunId, runDetail, isRunStreaming } = useSessions();
   const [hoverIndex, setHoverIndex] = React.useState<number | null>(null);
-  const [rightPanelTab, setRightPanelTab] = React.useState<RightPanelTab>("car");
+  const [dashboardTab, setDashboardTab] = React.useState<DashboardTab>("car");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = React.useState(false);
   const [isTogglingUdpListening, setIsTogglingUdpListening] = React.useState(false);
   const [activePage, setActivePage] = React.useState<"sessions" | "cars">("sessions");
@@ -63,9 +66,10 @@ export function App() {
 
   React.useEffect(() => {
     if (state.connected || selectedRunId !== "live") return;
+    if (state.telemetry || state.packets > 0 || state.lastPacketAt) return;
     const latestRun = sessions[0]?.runs[0];
     if (latestRun) setSelectedRunId(latestRun.id);
-  }, [selectedRunId, sessions, state.connected, setSelectedRunId]);
+  }, [selectedRunId, sessions, state.connected, state.lastPacketAt, state.packets, state.telemetry, setSelectedRunId]);
 
   const historicalPath = React.useMemo(() => buildPathFromTelemetry(runDetail?.samples ?? []), [runDetail]);
   const displayPath = selectedRunId === "live" ? path : historicalPath;
@@ -168,38 +172,69 @@ export function App() {
           ) : shouldShowFirstRunSetup ? (
             <FirstRunSetupPanel state={state} />
           ) : (
-            <section className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-2">
-              <section className="grid min-h-0 min-w-0 grid-rows-[minmax(0,7fr)_minmax(190px,3fr)] gap-4">
-                <TrackMapPanel
-                  path={displayPath}
-                  hoverIndex={hoverIndex}
-                  playheadPathIndex={playback.playheadPathIndex}
-                  playheadTelemetry={playheadSample}
-                  isPlaying={playback.isPlaying}
-                  canPlayTelemetry={playback.canPlayTelemetry}
-                  playbackLabel={playback.playbackLabel}
-                  playbackSpeed={playback.playbackSpeed}
-                  canDecreasePlaybackSpeed={playback.canDecreasePlaybackSpeed}
-                  canIncreasePlaybackSpeed={playback.canIncreasePlaybackSpeed}
-                  canReturnToLive={playback.canReturnToLive}
-                  onHoverIndex={setHoverIndex}
-                  onScrubPathIndex={handleScrubPathIndex}
-                  onTogglePlayback={playback.togglePlayback}
-                  onDecreasePlaybackSpeed={playback.decreasePlaybackSpeed}
-                  onIncreasePlaybackSpeed={playback.increasePlaybackSpeed}
-                  onReturnToLive={playback.returnToLive}
-                />
-                <LiveInputsPanel telemetry={telemetry} samples={displaySamples} />
-              </section>
+            <Tabs
+              value={dashboardTab}
+              onValueChange={(value) => setDashboardTab(value as DashboardTab)}
+              className="min-h-0 flex-1 gap-0"
+            >
+              <div className="flex shrink-0 items-center gap-4 border-b border-white/10 px-4 py-3">
+                <TabsList className="shrink-0">
+                  <TabsTrigger value="car" className="gap-2 px-3">
+                    <Gauge size={16} />
+                    Car
+                  </TabsTrigger>
+                  <TabsTrigger value="behavior" className="gap-2 px-3">
+                    <BarChart3 size={16} />
+                    Behaviour
+                  </TabsTrigger>
+                  <TabsTrigger value="analysis" className="gap-2 px-3">
+                    <LineChart size={16} />
+                    Analysis
+                  </TabsTrigger>
+                </TabsList>
+              </div>
 
-              <TelemetrySidePanel
-                activeTab={rightPanelTab}
-                onTabChange={setRightPanelTab}
-                telemetry={telemetry}
-                samples={displaySamples}
-                state={displayState}
-              />
-            </section>
+              <TabsContent value="car" className="m-0 min-h-0 min-w-0 flex-1">
+                <section className="grid h-full min-h-0 gap-4 p-4 lg:grid-cols-2">
+                  <section className="grid min-h-0 min-w-0 grid-rows-[minmax(0,7fr)_minmax(190px,3fr)] gap-4">
+                    <TrackMapPanel
+                      path={displayPath}
+                      hoverIndex={hoverIndex}
+                      playheadPathIndex={playback.playheadPathIndex}
+                      playheadTelemetry={playheadSample}
+                      isPlaying={playback.isPlaying}
+                      canPlayTelemetry={playback.canPlayTelemetry}
+                      playbackLabel={playback.playbackLabel}
+                      playbackSpeed={playback.playbackSpeed}
+                      canDecreasePlaybackSpeed={playback.canDecreasePlaybackSpeed}
+                      canIncreasePlaybackSpeed={playback.canIncreasePlaybackSpeed}
+                      canReturnToLive={playback.canReturnToLive}
+                      onHoverIndex={setHoverIndex}
+                      onScrubPathIndex={handleScrubPathIndex}
+                      onTogglePlayback={playback.togglePlayback}
+                      onDecreasePlaybackSpeed={playback.decreasePlaybackSpeed}
+                      onIncreasePlaybackSpeed={playback.increasePlaybackSpeed}
+                      onReturnToLive={playback.returnToLive}
+                    />
+                    <LiveInputsPanel telemetry={telemetry} samples={displaySamples} />
+                  </section>
+
+                  <TelemetrySidePanel telemetry={telemetry} />
+                </section>
+              </TabsContent>
+
+              <TabsContent value="behavior" className="m-0 min-h-0 min-w-0 flex-1">
+                <section className="h-full min-h-0 p-4">
+                  <BehaviorPanel samples={displaySamples} />
+                </section>
+              </TabsContent>
+
+              <TabsContent value="analysis" className="m-0 min-h-0 min-w-0 flex-1">
+                <section className="h-full min-h-0 p-4">
+                  <PowertrainAnalysisPanel samples={displaySamples} telemetry={telemetry} />
+                </section>
+              </TabsContent>
+            </Tabs>
           )}
         </main>
       </div>
