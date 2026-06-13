@@ -1,6 +1,6 @@
 {
   "name": "forza-horizon-tuner",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local telemetry dashboard and setup advisor for Forza Horizon.",
   "author": {
     "name": "Ryan Kuah",
