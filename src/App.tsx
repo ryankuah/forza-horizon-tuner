@@ -3,15 +3,14 @@ import { BarChart3, CheckCircle2, Gamepad2, Gauge, LineChart, MonitorDot, Radio,
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { LiveInputsPanel } from "@/features/inputs/LiveInputsPanel";
-import { buildPathFromTelemetry } from "@/features/map/pathSamples";
 import { TrackMapPanel } from "@/features/map/TrackMapPanel";
 import { TelemetrySidePanel } from "@/features/dashboard/telemetryVisuals";
 import { BehaviorPanel } from "@/features/dashboard/TuningBehaviorPanel";
 import { PowertrainAnalysisPanel } from "@/features/analysis/PowertrainAnalysisPanel";
 import { CarCatalogPage } from "@/features/cars/CarCatalogPage";
-import { SessionHeader } from "@/features/session/SessionHeader";
+import { RunSidebar } from "@/features/runs/RunSidebar";
 import { useLiveTelemetry } from "@/hooks/useLiveTelemetry";
-import { useSessions } from "@/hooks/useSessions";
+import { useRuns } from "@/hooks/useRuns";
 import { useTelemetryPlayback } from "@/hooks/useTelemetryPlayback";
 import { queryCars } from "@/services/api";
 import type { AppState, CarCatalogItem, DashboardTab, RunDetail, RunSelection, Telemetry } from "@/types/telemetry";
@@ -29,7 +28,6 @@ function buildHistoricalState(liveState: AppState, detail: RunDetail | null, tel
     lastSource: run?.lastSource ?? "stored run",
     telemetry,
     summary: detail?.summary ?? null,
-    sessionId: run?.sessionId,
     runId: run?.id
   };
 }
@@ -39,14 +37,21 @@ function sampleAtIndex(samples: Telemetry[], index: number | null, fallback?: Te
   return samples[index] ?? fallback ?? null;
 }
 
+function sampleAtAbsoluteIndex(samples: Telemetry[], index: number | null, offset: number, fallback?: Telemetry | null) {
+  if (index === null) return fallback ?? null;
+  return samples[index - offset] ?? fallback ?? null;
+}
+
 export function App() {
   const { state, path, samples, handleState } = useLiveTelemetry();
-  const { sessions, selectedRunId, setSelectedRunId, runDetail, isRunStreaming } = useSessions();
+  const { runGroups, selectedRunId, setSelectedRunId, runDetail, isRunStreaming } = useRuns();
   const [hoverIndex, setHoverIndex] = React.useState<number | null>(null);
+  const [graphHoverIndex, setGraphHoverIndex] = React.useState<number | null>(null);
   const [dashboardTab, setDashboardTab] = React.useState<DashboardTab>("car");
+  const [carTelemetryView, setCarTelemetryView] = React.useState<"live" | "graph">("live");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = React.useState(false);
   const [isTogglingUdpListening, setIsTogglingUdpListening] = React.useState(false);
-  const [activePage, setActivePage] = React.useState<"sessions" | "cars">("sessions");
+  const [activePage, setActivePage] = React.useState<"runs" | "cars">("runs");
   const [carCatalog, setCarCatalog] = React.useState<CarCatalogItem[]>([]);
 
   React.useEffect(() => {
@@ -67,18 +72,20 @@ export function App() {
   React.useEffect(() => {
     if (state.connected || selectedRunId !== "live") return;
     if (state.telemetry || state.packets > 0 || state.lastPacketAt) return;
-    const latestRun = sessions[0]?.runs[0];
+    const latestRun = runGroups[0]?.runs[0];
     if (latestRun) setSelectedRunId(latestRun.id);
-  }, [selectedRunId, sessions, state.connected, state.lastPacketAt, state.packets, state.telemetry, setSelectedRunId]);
+  }, [selectedRunId, runGroups, state.connected, state.lastPacketAt, state.packets, state.telemetry, setSelectedRunId]);
 
-  const historicalPath = React.useMemo(() => buildPathFromTelemetry(runDetail?.samples ?? []), [runDetail]);
+  const sampleOffset = selectedRunId === "live" ? 0 : runDetail?.sampleWindow.start ?? 0;
+  const historicalPath = runDetail?.path ?? [];
   const displayPath = selectedRunId === "live" ? path : historicalPath;
   const displaySamples = selectedRunId === "live" ? samples : runDetail?.samples ?? EMPTY_TELEMETRY_SAMPLES;
   const playback = useTelemetryPlayback({
     displayPath,
     samples: displaySamples,
-    selectedSessionId: selectedRunId,
-    isSessionStreaming: isRunStreaming
+    sampleOffset,
+    selectedRunId,
+    isRunStreaming
   });
 
   React.useEffect(() => {
@@ -87,9 +94,18 @@ export function App() {
 
   const latestPathSample = displayPath[displayPath.length - 1] ?? null;
   const hoverPathSample = hoverIndex === null ? null : displayPath[hoverIndex];
-  const hoverSample = sampleAtIndex(displaySamples, hoverPathSample?.sampleIndex ?? null, hoverPathSample?.telemetry);
-  const playheadSample = sampleAtIndex(displaySamples, playback.playheadIndex);
+  const hoverSample = selectedRunId === "live"
+    ? sampleAtIndex(displaySamples, hoverPathSample?.sampleIndex ?? null, hoverPathSample?.telemetry)
+    : sampleAtAbsoluteIndex(displaySamples, hoverPathSample?.sampleIndex ?? null, sampleOffset, hoverPathSample?.telemetry);
+  const playheadSample = selectedRunId === "live"
+    ? sampleAtIndex(displaySamples, playback.playheadIndex)
+    : sampleAtAbsoluteIndex(displaySamples, playback.playheadIndex, sampleOffset);
+  const graphHoverSample = selectedRunId === "live"
+    ? sampleAtIndex(displaySamples, graphHoverIndex)
+    : sampleAtAbsoluteIndex(displaySamples, graphHoverIndex, sampleOffset);
+  const currentSampleIndex = playback.playheadIndex ?? latestPathSample?.sampleIndex ?? (displaySamples.length ? displaySamples.length - 1 : null);
   const telemetry = hoverSample
+    ?? graphHoverSample
     ?? playheadSample
     ?? latestPathSample?.telemetry
     ?? (selectedRunId === "live" ? state.telemetry : runDetail?.samples.at(-1) ?? null);
@@ -101,7 +117,7 @@ export function App() {
     }
     return carsByOrdinal;
   }, [carCatalog]);
-  const selectedSessionLabel = selectedRunId === "live"
+  const selectedRunLabel = selectedRunId === "live"
     ? "Live telemetry"
     : runDetail?.run
       ? `Run ${new Date(runDetail.run.startedAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`
@@ -109,17 +125,19 @@ export function App() {
   const shouldShowFirstRunSetup = selectedRunId === "live"
     && !state.connected
     && !state.telemetry
-    && sessions.length === 0;
+    && runGroups.length === 0;
 
   function handleRunChange(runId: RunSelection) {
     setSelectedRunId(runId);
-    setActivePage("sessions");
+    setActivePage("runs");
     setHoverIndex(null);
+    setGraphHoverIndex(null);
     playback.resetPlayback();
   }
 
   function handleScrubPathIndex(index: number | null) {
     setHoverIndex(null);
+    setGraphHoverIndex(null);
     playback.scrubPathIndex(index);
   }
 
@@ -140,19 +158,18 @@ export function App() {
           if (!(event.target as Element).closest("[data-path-surface]")) setHoverIndex(null);
         }}
       >
-        <SessionHeader
-          sessions={sessions}
+        <RunSidebar
+          runGroups={runGroups}
           carCatalogByOrdinal={carCatalogByOrdinal}
           activePage={activePage}
           selectedRunId={selectedRunId}
           canSelectLive={state.connected}
-          liveSessionId={state.sessionId}
           liveRunId={state.runId}
           liveTelemetry={state.telemetry}
           livePackets={state.packets}
           liveBadPackets={state.badPackets}
           liveLastPacketAt={state.lastPacketAt}
-          statusLabel={selectedSessionLabel}
+          statusLabel={selectedRunLabel}
           statusConnected={displayState.connected}
           statusPackets={displayState.packets}
           statusUdpPort={displayState.udpPort}
@@ -216,10 +233,28 @@ export function App() {
                       onIncreasePlaybackSpeed={playback.increasePlaybackSpeed}
                       onReturnToLive={playback.returnToLive}
                     />
-                    <LiveInputsPanel telemetry={telemetry} samples={displaySamples} />
+                    <LiveInputsPanel
+                      telemetry={telemetry}
+                      samples={displaySamples}
+                      mode={carTelemetryView}
+                      currentSampleIndex={currentSampleIndex}
+                      hoverSampleIndex={graphHoverIndex}
+                      sampleOffset={sampleOffset}
+                      powerBand={selectedRunId === "live" ? null : runDetail?.powerBand ?? null}
+                      onGraphHoverIndex={setGraphHoverIndex}
+                    />
                   </section>
 
-                  <TelemetrySidePanel telemetry={telemetry} />
+                  <TelemetrySidePanel
+                    telemetry={telemetry}
+                    samples={displaySamples}
+                    sampleOffset={sampleOffset}
+                    currentSampleIndex={currentSampleIndex}
+                    hoverSampleIndex={graphHoverIndex}
+                    mode={carTelemetryView}
+                    onModeChange={setCarTelemetryView}
+                    onGraphHoverIndex={setGraphHoverIndex}
+                  />
                 </section>
               </TabsContent>
 
@@ -231,7 +266,11 @@ export function App() {
 
               <TabsContent value="analysis" className="m-0 min-h-0 min-w-0 flex-1">
                 <section className="h-full min-h-0 p-4">
-                  <PowertrainAnalysisPanel samples={displaySamples} telemetry={telemetry} />
+                  <PowertrainAnalysisPanel
+                    samples={displaySamples}
+                    telemetry={telemetry}
+                    powerBand={selectedRunId === "live" ? null : runDetail?.powerBand ?? null}
+                  />
                 </section>
               </TabsContent>
             </Tabs>
@@ -276,7 +315,7 @@ function FirstRunSetupPanel({ state }: { state: AppState }) {
               Configure Forza Data Out to begin recording telemetry.
             </h1>
             <p className="m-0 max-w-2xl text-sm leading-6 text-[#a9b3ae]">
-              No live packet or saved session is available yet. Point the game at this device and the app will switch to the telemetry dashboard automatically.
+              No live packet or saved run is available yet. Point the game at this device and the app will switch to the telemetry dashboard automatically.
             </p>
           </div>
         </div>

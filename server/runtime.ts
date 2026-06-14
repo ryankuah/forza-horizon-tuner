@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { createTelemetryDatabase } from "./database";
 import { enrichTelemetry, parseForzaPacket, type RawTelemetry } from "./forzaPacket";
 import { buildTuningAdvice, TelemetryWindow } from "./tuning";
-import type { Advice, AppState, RunDetail, SessionWithRuns, Summary, Telemetry } from "../src/types/telemetry";
+import type { Advice, AppState, RunDateGroup, RunDetail, Summary, Telemetry } from "../src/types/telemetry";
 
 type RuntimeState = {
   connected: boolean;
@@ -18,14 +18,10 @@ type RuntimeState = {
   advice: Advice[];
 };
 
-type PendingSession = {
+type PendingRun = {
   id: string;
   startedAt: number;
   persisted: boolean;
-};
-
-type PendingRun = PendingSession & {
-  sessionId: string;
   splitReason: string;
 };
 
@@ -45,7 +41,7 @@ type RuntimeOptions = {
 export function createTelemetryRuntime(options: RuntimeOptions = {}) {
   const udpPort = options.udpPort ?? Number(process.env.FORZA_UDP_PORT || 9999);
   const database = createTelemetryDatabase(options.dbPath);
-  const removedEmptySessions = database.deleteEmptyRunsAndSessions();
+  const removedEmptyRuns = database.deleteEmptyRuns();
   const events = new EventEmitter();
   const state: RuntimeState = {
     connected: false,
@@ -58,8 +54,7 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     advice: []
   };
 
-  let currentSession = createPendingSession();
-  let currentRun = createPendingRun(currentSession.id, currentSession.startedAt, "connection");
+  let currentRun = createPendingRun(Date.now(), "connection");
   let telemetryWindow = new TelemetryWindow();
   let udp: dgram.Socket | null = null;
   let udpListening = false;
@@ -141,7 +136,6 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
       lastPacketAt: state.lastPacketAt,
       lastSource: state.lastSource,
       udpPort,
-      sessionId: currentSession.id,
       localIps: localIps(),
       telemetry: state.last,
       summary: state.summary,
@@ -151,23 +145,28 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     };
   }
 
-  function listSessions(): { currentSessionId: string; currentRunId: string; sessions: SessionWithRuns[] } {
+  function listRunGroups(): { currentRunId: string; runGroups: RunDateGroup[] } {
     return {
-      currentSessionId: currentSession.id,
       currentRunId: currentRun.id,
-      sessions: database.listSessions()
+      runGroups: database.listRunGroups()
     };
   }
 
-  function getRunDetail(runId: string, limit = 250000): RunDetail | null {
+  function getRunDetail(runId: string, limit = 3000): RunDetail | null {
     const run = database.getRun(runId);
     if (!run) return null;
 
-    const samples = database.getSamples(runId, clampSampleLimit(limit));
+    database.ensurePathPoints(runId);
+    const path = database.getPathPoints(runId);
+    const powerBand = database.getPowerBand(runId);
+    const sampleWindow = database.getSampleWindow(runId, Math.max(0, run.packetCount - clampSampleLimit(limit)), clampSampleLimit(limit));
     return {
       run,
-      samples,
-      summary: summarizeSamples(samples)
+      path,
+      samples: sampleWindow.samples,
+      sampleWindow,
+      powerBand,
+      summary: summarizeSamples(sampleWindow.samples)
     };
   }
 
@@ -182,11 +181,10 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
   function logStartup() {
     console.log("");
     console.log("Forza Horizon Tuner");
-    console.log(`Session DB:     ${database.path}`);
-    console.log(`Session ID:     ${currentSession.id} (pending)`);
+    console.log(`Telemetry DB:   ${database.path}`);
     console.log(`Run ID:         ${currentRun.id} (pending)`);
-    if (removedEmptySessions > 0) {
-      console.log(`Cleaned empty sessions: ${removedEmptySessions}`);
+    if (removedEmptyRuns > 0) {
+      console.log(`Cleaned empty runs: ${removedEmptyRuns}`);
     }
     console.log(`UDP telemetry: 0.0.0.0:${udpPort}`);
     console.log("LAN IPs:");
@@ -207,7 +205,7 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
 
     try {
       const telemetry = enrichTelemetry(parseForzaPacket(message), receivedAt);
-      maybeStartNewSessionForReconnect(receivedAt);
+      maybeStartNewRunForReconnect(receivedAt);
       maybeStartNewRunForTelemetry(telemetry, receivedAt);
       handleTelemetry({ telemetry, receivedAt, source, rawPacket: message });
     } catch (error) {
@@ -225,11 +223,11 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     }
   }
 
-  function maybeStartNewSessionForReconnect(receivedAt: number) {
+  function maybeStartNewRunForReconnect(receivedAt: number) {
     if (!state.lastPacketAt) return;
     if (state.connected) return;
     if (receivedAt - state.lastPacketAt <= 2500) return;
-    startNewSession("udp_reconnect", receivedAt);
+    startNewRun("udp_reconnect", receivedAt);
   }
 
   function maybeStartNewRunForTelemetry(telemetry: Telemetry, receivedAt: number) {
@@ -245,54 +243,34 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
       return;
     }
 
+    if (quickTravelDetected(state.last, telemetry, state.lastPacketAt, receivedAt)) {
+      startNewRun("quick_travel", receivedAt);
+      return;
+    }
+
     if (telemetry.TimestampMS + 100 < state.last.TimestampMS) {
       startNewRun("telemetry_reset", receivedAt);
     }
-  }
-
-  function startNewSession(reason: string, startedAt = Date.now()) {
-    if (currentSession.persisted) {
-      database.endSession(currentSession.id, startedAt);
-    }
-    if (currentRun.persisted) {
-      database.endRun(currentRun.id, startedAt);
-    }
-
-    currentSession = createPendingSession(startedAt);
-    currentRun = createPendingRun(currentSession.id, startedAt, reason);
-    telemetryWindow = new TelemetryWindow();
-    state.connected = false;
-    state.packets = 0;
-    state.badPackets = 0;
-    state.lastPacketAt = null;
-    state.lastSource = reason;
-    state.last = null;
-    state.summary = null;
-    state.advice = buildTuningAdvice(null, null);
-    console.log(`Prepared telemetry session ${currentSession.id} (${reason})`);
   }
 
   function startNewRun(reason: string, startedAt = Date.now()) {
     if (currentRun.persisted) {
       database.endRun(currentRun.id, startedAt);
     }
-    currentRun = createPendingRun(currentSession.id, startedAt, reason);
+    currentRun = createPendingRun(startedAt, reason);
     telemetryWindow = new TelemetryWindow();
     state.packets = 0;
     state.badPackets = 0;
+    state.lastSource = reason;
+    state.last = null;
     state.summary = null;
     state.advice = buildTuningAdvice(null, null);
     console.log(`Prepared telemetry run ${currentRun.id} (${reason})`);
   }
 
   function ensureCurrentRun(receivedAt: number) {
-    if (!currentSession.persisted) {
-      database.startSession(currentSession.startedAt, currentSession.id);
-      currentSession.persisted = true;
-      console.log(`Started telemetry session ${currentSession.id}`);
-    }
     if (!currentRun.persisted) {
-      database.startRun(currentSession.id, currentRun.startedAt, currentRun.id, currentRun.splitReason);
+      database.startRun(currentRun.startedAt, currentRun.id, currentRun.splitReason);
       currentRun.persisted = true;
       console.log(`Started telemetry run ${currentRun.id}`);
     }
@@ -344,7 +322,7 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     stop,
     onState,
     snapshot,
-    listSessions,
+    listRunGroups,
     getRun,
     getRunDetail,
     iterateSampleJson,
@@ -470,18 +448,9 @@ function startSimulator(handleTelemetry: (input: TelemetryInput) => void) {
   }, 50);
 }
 
-function createPendingSession(startedAt = Date.now()): PendingSession {
+function createPendingRun(startedAt = Date.now(), splitReason = "start"): PendingRun {
   return {
     id: randomUUID(),
-    startedAt,
-    persisted: false
-  };
-}
-
-function createPendingRun(sessionId: string, startedAt = Date.now(), splitReason = "start"): PendingRun {
-  return {
-    id: randomUUID(),
-    sessionId,
     startedAt,
     persisted: false,
     splitReason
@@ -494,12 +463,24 @@ function carIdentityChanged(previous: Telemetry, telemetry: Telemetry) {
     || previous.DrivetrainType !== telemetry.DrivetrainType;
 }
 
+function quickTravelDetected(previous: Telemetry, telemetry: Telemetry, previousAt: number | null, receivedAt: number) {
+  if (!previousAt) return false;
+  if (!Number.isFinite(previous.PositionX) || !Number.isFinite(previous.PositionZ)) return false;
+  if (!Number.isFinite(telemetry.PositionX) || !Number.isFinite(telemetry.PositionZ)) return false;
+
+  const elapsedMs = receivedAt - previousAt;
+  if (elapsedMs <= 0 || elapsedMs > 10000) return false;
+
+  const distance = Math.hypot(telemetry.PositionX - previous.PositionX, telemetry.PositionZ - previous.PositionZ);
+  return distance > 1200;
+}
+
 function summarizeSamples(samples: Telemetry[]) {
-  const sessionWindow = new TelemetryWindow();
+  const runWindow = new TelemetryWindow();
   for (const sample of samples) {
-    sessionWindow.add(sample);
+    runWindow.add(sample);
   }
-  return sessionWindow.summary();
+  return runWindow.summary();
 }
 
 function clampSampleLimit(value: unknown) {

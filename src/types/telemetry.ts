@@ -140,7 +140,6 @@ export type AppState = {
   summary: Summary | null;
   udpPort: number;
   udpListening: boolean;
-  sessionId?: string;
   runId?: string;
 };
 
@@ -150,7 +149,7 @@ export type PathSample = {
   speedKmh: number;
   at: number;
   sampleIndex: number;
-  telemetry: Telemetry;
+  telemetry: Telemetry | null;
 };
 
 export type SvgPoint = {
@@ -211,20 +210,8 @@ export type TelemetryValue = number | string | null | undefined;
 export type TelemetryFieldName = Extract<keyof Telemetry, string>;
 export type DashboardTab = "car" | "behavior" | "analysis";
 export type RunSelection = "live" | string;
-export type SessionSelection = RunSelection;
-export type SessionSummary = {
-  id: string;
-  startedAt: number;
-  lastPacketAt: number | null;
-  endedAt: number | null;
-  packetCount: number;
-  badPacketCount: number;
-  runCount: number;
-  lastSource: string | null;
-};
 export type RunSummary = {
   id: string;
-  sessionId: string;
   startedAt: number;
   lastPacketAt: number | null;
   endedAt: number | null;
@@ -237,16 +224,43 @@ export type RunSummary = {
   carPerformanceIndex: number | null;
   drivetrainType: number | null;
 };
-export type SessionWithRuns = {
-  session: SessionSummary;
+export type RunDateGroup = {
+  dateKey: string;
+  dateStart: number;
   runs: RunSummary[];
 };
 export type RunDetail = {
   run: RunSummary;
+  path: PathSample[];
   samples: Telemetry[];
+  sampleWindow: RunSampleWindow;
+  powerBand: PowerBandEstimate | null;
   summary: Summary | null;
 };
-export type SessionDetail = RunDetail;
+export type RunSampleWindow = {
+  start: number;
+  total: number;
+  samples: Telemetry[];
+};
+export type PowerBandBin = {
+  rpm: number;
+  sampleCount: number;
+  avgPowerHp: number;
+  avgTorqueNm: number;
+  avgBoost: number;
+};
+export type PowerBandEstimate = {
+  bins: PowerBandBin[];
+  sampleCount: number;
+  peakPowerHp: number;
+  peakPowerRpm: number;
+  peakTorqueNm: number;
+  peakTorqueRpm: number;
+  bandStartRpm: number;
+  bandEndRpm: number;
+  thresholdPercent: number;
+  confidence: "Low" | "Medium" | "High";
+};
 export type CarCatalogSortKey =
   | "make"
   | "year"

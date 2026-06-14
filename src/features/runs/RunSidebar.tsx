@@ -3,16 +3,32 @@ import { Car, Check, ChevronDown, ChevronRight, Clock, Gauge, PanelLeftClose, Pa
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { drivetrainLabel, shortSessionId } from "@/lib/format";
-import type { CarCatalogItem, RunSelection, RunSummary, SessionSummary, SessionWithRuns, Telemetry } from "@/types/telemetry";
+import { drivetrainLabel, shortRunId } from "@/lib/format";
+import type { CarCatalogItem, RunDateGroup, RunSelection, RunSummary, Telemetry } from "@/types/telemetry";
 
-function formatSessionTime(value: number | null | undefined) {
+function formatRunTime(value: number | null | undefined) {
   if (!value) return "No packets";
   return new Date(value).toLocaleString([], {
     month: "short",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit"
+  });
+}
+
+function formatDateGroup(value: number) {
+  const date = new Date(value);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+
+  if (date.toDateString() === today.toDateString()) return "Today";
+  if (date.toDateString() === yesterday.toDateString()) return "Yesterday";
+  return date.toLocaleDateString([], {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: date.getFullYear() === today.getFullYear() ? undefined : "numeric"
   });
 }
 
@@ -44,7 +60,7 @@ function formatCar(
   return [carName, classLabel ?? piLabel, drivetrain].filter(Boolean).join(" / ");
 }
 
-function formatDuration(item: Pick<SessionSummary | RunSummary, "startedAt" | "endedAt" | "lastPacketAt">) {
+function formatDuration(item: Pick<RunSummary, "startedAt" | "endedAt" | "lastPacketAt">) {
   const start = item.startedAt;
   const end = item.endedAt ?? item.lastPacketAt;
   if (!end || end <= start) return "Open";
@@ -56,21 +72,20 @@ function formatDuration(item: Pick<SessionSummary | RunSummary, "startedAt" | "e
 }
 
 function splitReasonLabel(reason: string | null | undefined) {
+  if (reason === "quick_travel") return "Quick travel";
   if (reason === "car_change") return "Car change";
   if (reason === "afk") return "AFK";
   if (reason === "telemetry_reset") return "Reset";
   if (reason === "udp_reconnect") return "Reconnect";
-  if (reason === "legacy") return "Legacy";
   return "Run";
 }
 
-export function SessionHeader({
-  sessions,
+export function RunSidebar({
+  runGroups,
   carCatalogByOrdinal,
   activePage,
   selectedRunId,
   canSelectLive,
-  liveSessionId,
   liveRunId,
   liveTelemetry,
   livePackets,
@@ -89,12 +104,11 @@ export function SessionHeader({
   onRunChange,
   onToggleUdpListening
 }: {
-  sessions: SessionWithRuns[];
+  runGroups: RunDateGroup[];
   carCatalogByOrdinal: Map<number, CarCatalogItem>;
-  activePage: "sessions" | "cars";
+  activePage: "runs" | "cars";
   selectedRunId: RunSelection;
   canSelectLive: boolean;
-  liveSessionId?: string;
   liveRunId?: string;
   liveTelemetry?: Telemetry | null;
   livePackets?: number;
@@ -109,14 +123,14 @@ export function SessionHeader({
   statusRunId?: string;
   isCollapsed: boolean;
   onCollapsedChange: (isCollapsed: boolean) => void;
-  onPageChange: (page: "sessions" | "cars") => void;
+  onPageChange: (page: "runs" | "cars") => void;
   onRunChange: (runId: RunSelection) => void;
   onToggleUdpListening: () => void;
 }) {
   const selectedValue = canSelectLive
     ? selectedRunId
     : selectedRunId === "live"
-      ? sessions[0]?.runs[0]?.id ?? "__none"
+      ? runGroups[0]?.runs[0]?.id ?? "__none"
       : selectedRunId;
 
   function selectRun(runId: RunSelection | "__none") {
@@ -130,7 +144,7 @@ export function SessionHeader({
         "flex h-screen shrink-0 flex-col border-r border-white/10 bg-[#242424] text-[#e7e7e7] transition-[width] duration-200 ease-out",
         isCollapsed ? "w-[132px]" : "w-[316px]"
       )}
-      aria-label="Sessions"
+      aria-label="Runs"
     >
       <div className="flex h-[62px] shrink-0 items-center justify-end px-3 [-webkit-app-region:drag]">
         <Button
@@ -152,18 +166,17 @@ export function SessionHeader({
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
         {isCollapsed ? (
-          <CollapsedSessions
-            sessions={sessions}
+          <CollapsedRuns
+            runGroups={runGroups}
             selectedValue={selectedValue}
             canSelectLive={canSelectLive}
             onRunChange={selectRun}
           />
         ) : (
-          <ExpandedSessions
-            sessions={sessions}
+          <ExpandedRuns
+            runGroups={runGroups}
             selectedValue={selectedValue}
             canSelectLive={canSelectLive}
-            liveSessionId={liveSessionId}
             liveRunId={liveRunId}
             liveTelemetry={liveTelemetry}
             livePackets={livePackets}
@@ -195,9 +208,9 @@ function SidebarPageNav({
   isCollapsed,
   onPageChange
 }: {
-  activePage: "sessions" | "cars";
+  activePage: "runs" | "cars";
   isCollapsed: boolean;
-  onPageChange: (page: "sessions" | "cars") => void;
+  onPageChange: (page: "runs" | "cars") => void;
 }) {
   return (
     <nav className={cn("shrink-0 px-2 pb-4", isCollapsed && "px-3")} aria-label="Primary pages">
@@ -272,14 +285,14 @@ function SidebarStatusFooter({
             title={connected ? "Connected" : listenerLabel}
           />
           <div className="max-w-full truncate font-mono text-[10px] text-[#8f8f8f]">
-            {runId ? shortSessionId(runId) : "No run"}
+            {runId ? shortRunId(runId) : "No run"}
           </div>
         </div>
       ) : (
         <div className="grid gap-2">
           <div className="flex min-w-0 items-center justify-between gap-3">
             <div className="truncate text-[13px] font-medium text-[#ededed]">{label}</div>
-            <div className="shrink-0 font-mono text-xs text-[#8f8f8f]">{runId ? shortSessionId(runId) : "No run"}</div>
+            <div className="shrink-0 font-mono text-xs text-[#8f8f8f]">{runId ? shortRunId(runId) : "No run"}</div>
           </div>
           <div className="flex min-w-0 items-center gap-2 text-xs text-[#8f8f8f]">
             <span>{connected ? "Connected" : "Idle"}</span>
@@ -311,11 +324,10 @@ function SidebarStatusFooter({
   );
 }
 
-function ExpandedSessions({
-  sessions,
+function ExpandedRuns({
+  runGroups,
   selectedValue,
   canSelectLive,
-  liveSessionId,
   liveRunId,
   liveTelemetry,
   livePackets,
@@ -324,10 +336,9 @@ function ExpandedSessions({
   carCatalogByOrdinal,
   onRunChange
 }: {
-  sessions: SessionWithRuns[];
+  runGroups: RunDateGroup[];
   selectedValue: RunSelection | "__none";
   canSelectLive: boolean;
-  liveSessionId?: string;
   liveRunId?: string;
   liveTelemetry?: Telemetry | null;
   livePackets?: number;
@@ -336,24 +347,24 @@ function ExpandedSessions({
   carCatalogByOrdinal: Map<number, CarCatalogItem>;
   onRunChange: (runId: RunSelection | "__none") => void;
 }) {
-  const [expandedSessionIds, setExpandedSessionIds] = React.useState<Set<string>>(() => new Set(sessions.slice(0, 2).map(({ session }) => session.id)));
+  const [expandedDateKeys, setExpandedDateKeys] = React.useState<Set<string>>(() => new Set(runGroups.slice(0, 2).map((group) => group.dateKey)));
 
   React.useEffect(() => {
-    setExpandedSessionIds((current) => {
+    setExpandedDateKeys((current) => {
       const next = new Set(current);
-      for (const group of sessions) {
-        if (group.runs.some((run) => run.id === selectedValue)) next.add(group.session.id);
+      for (const group of runGroups) {
+        if (group.runs.some((run) => run.id === selectedValue)) next.add(group.dateKey);
       }
-      if (next.size === 0 && sessions[0]) next.add(sessions[0].session.id);
+      if (next.size === 0 && runGroups[0]) next.add(runGroups[0].dateKey);
       return next;
     });
-  }, [selectedValue, sessions]);
+  }, [selectedValue, runGroups]);
 
-  function toggleSession(sessionId: string) {
-    setExpandedSessionIds((current) => {
+  function toggleDate(dateKey: string) {
+    setExpandedDateKeys((current) => {
       const next = new Set(current);
-      if (next.has(sessionId)) next.delete(sessionId);
-      else next.add(sessionId);
+      if (next.has(dateKey)) next.delete(dateKey);
+      else next.add(dateKey);
       return next;
     });
   }
@@ -379,13 +390,12 @@ function ExpandedSessions({
               {selectedValue === "live" ? <Check size={15} /> : <Badge className="h-5 bg-[#4cc38a]/15 text-[#70e0a6]">Live</Badge>}
             </div>
             <div className="mt-1 truncate pl-6 text-xs text-[#8f8f8f]">
-              {liveRunId ? `Run ${shortSessionId(liveRunId)}` : "Waiting for run"}
-              {liveSessionId ? ` / Session ${shortSessionId(liveSessionId)}` : ""}
+              {liveRunId ? `Run ${shortRunId(liveRunId)}` : "Waiting for run"}
             </div>
             <div className="mt-2 grid grid-cols-3 gap-2 pl-6 text-xs text-[#8f8f8f]">
               <span>{(livePackets ?? 0).toLocaleString()} pkt</span>
               <span>{(liveBadPackets ?? 0).toLocaleString()} bad</span>
-              <span className="truncate">{formatSessionTime(liveLastPacketAt)}</span>
+              <span className="truncate">{formatRunTime(liveLastPacketAt)}</span>
             </div>
             <div className="mt-1 truncate pl-6 text-xs text-[#8f8f8f]">
               {liveTelemetry
@@ -402,36 +412,35 @@ function ExpandedSessions({
       ) : null}
 
       <div className="grid gap-1">
-        <div className="px-3 pb-1 text-xs font-medium text-[#8e8e8e]">Sessions</div>
-        {sessions.map(({ session, runs }) => {
-          const isExpanded = expandedSessionIds.has(session.id);
+        <div className="px-3 pb-1 text-xs font-medium text-[#8e8e8e]">Runs</div>
+        {runGroups.map((group) => {
+          const { runs } = group;
+          const isExpanded = expandedDateKeys.has(group.dateKey);
           const selectedInside = runs.some((run) => run.id === selectedValue);
+          const packetCount = runs.reduce((total, run) => total + run.packetCount, 0);
+          const badPacketCount = runs.reduce((total, run) => total + run.badPacketCount, 0);
           return (
-            <div key={session.id} className="grid gap-1">
+            <div key={group.dateKey} className="grid gap-1">
               <button
                 className={cn(
                   "w-full rounded-lg px-2.5 py-2 text-left transition hover:bg-white/8",
                   selectedInside ? "bg-white/[0.07] text-white" : "text-[#d0d0d0]"
                 )}
                 type="button"
-                onClick={() => toggleSession(session.id)}
+                onClick={() => toggleDate(group.dateKey)}
                 aria-expanded={isExpanded}
               >
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex min-w-0 items-center gap-2">
                     {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                    <span className="truncate text-sm font-medium">{formatSessionTime(session.startedAt)}</span>
+                    <span className="truncate text-sm font-medium">{formatDateGroup(group.dateStart)}</span>
                   </div>
                   <Badge className="h-5 bg-white/8 text-[#bdbdbd]">{runs.length}</Badge>
                 </div>
                 <div className="mt-1 flex items-center gap-3 pl-6 text-xs text-[#8f8f8f]">
-                  <span>{session.packetCount.toLocaleString()} pkt</span>
-                  <span>{formatDuration(session)}</span>
-                  <span>{session.badPacketCount.toLocaleString()} bad</span>
-                </div>
-                <div className="mt-1 flex items-center gap-2 pl-6 text-xs text-[#8f8f8f]">
-                  <Clock size={13} />
-                  <span className="truncate">{shortSessionId(session.id)}</span>
+                  <span>{packetCount.toLocaleString()} pkt</span>
+                  <span>{runs.length === 1 ? "1 run" : `${runs.length} runs`}</span>
+                  <span>{badPacketCount.toLocaleString()} bad</span>
                 </div>
               </button>
 
@@ -453,8 +462,8 @@ function ExpandedSessions({
           );
         })}
 
-        {!canSelectLive && sessions.length === 0 ? (
-          <div className="px-3 py-2 text-sm text-[#8f8f8f]">No saved sessions yet.</div>
+        {!canSelectLive && runGroups.length === 0 ? (
+          <div className="px-3 py-2 text-sm text-[#8f8f8f]">No saved runs yet.</div>
         ) : null}
       </div>
     </div>
@@ -498,24 +507,24 @@ function RunButton({
       </div>
       <div className="mt-1 flex items-center gap-2 text-xs text-[#8f8f8f]">
         <Clock size={13} />
-        <span className="truncate">{shortSessionId(run.id)}</span>
+        <span className="truncate">{shortRunId(run.id)}</span>
       </div>
     </button>
   );
 }
 
-function CollapsedSessions({
-  sessions,
+function CollapsedRuns({
+  runGroups,
   selectedValue,
   canSelectLive,
   onRunChange
 }: {
-  sessions: SessionWithRuns[];
+  runGroups: RunDateGroup[];
   selectedValue: RunSelection | "__none";
   canSelectLive: boolean;
   onRunChange: (runId: RunSelection | "__none") => void;
 }) {
-  const visibleRuns = sessions.flatMap(({ runs }) => runs).slice(0, 10);
+  const visibleRuns = runGroups.flatMap(({ runs }) => runs).slice(0, 10);
 
   return (
     <div className="flex flex-col items-center gap-2">
@@ -541,7 +550,7 @@ function CollapsedSessions({
           )}
           type="button"
           onClick={() => onRunChange(run.id)}
-          aria-label={`Run ${shortSessionId(run.id)}`}
+          aria-label={`Run ${shortRunId(run.id)}`}
         >
           {new Date(run.startedAt).getDate()}
         </button>

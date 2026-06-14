@@ -5,7 +5,7 @@ import { clampNumber } from "@/lib/math";
 import { MapControls } from "./MapControls";
 import { MapLegend } from "./MapLegend";
 import { buildCornerSegments, buildPathRenderSegments, buildSelectedCornerPhaseSegments, cornerSegmentForIndex, mapPathStrokeClass } from "./cornerAnalysis";
-import { CAR_FOLLOW_MAP_ZOOM, MAP_DRAG_THRESHOLD_PX, MAP_IMAGE_HEIGHT, MAP_IMAGE_URL, MAP_IMAGE_WIDTH, MAP_ZOOM_STEP, MAX_MAP_ZOOM, activeMapCalibration, buildPathGeometry, centerViewBoxAtPoint, clientPointToSvgPoint, defaultSessionMapViewBox, mapMarkerScale, mapZoomPercent, nearestPointIndex, viewBoxCenter, worldTelemetryToMapPoint, zoomViewBoxAtPoint, clampMapViewBox } from "./mapGeometry";
+import { CAR_FOLLOW_MAP_ZOOM, MAP_DRAG_THRESHOLD_PX, MAP_IMAGE_HEIGHT, MAP_IMAGE_URL, MAP_IMAGE_WIDTH, MAP_ZOOM_STEP, MAX_MAP_ZOOM, activeMapCalibration, buildPathGeometry, centerViewBoxAtPoint, clientPointToSvgPoint, defaultRunMapViewBox, mapMarkerScale, mapZoomPercent, nearestPointIndex, viewBoxCenter, worldTelemetryToMapPoint, zoomViewBoxAtPoint, clampMapViewBox } from "./mapGeometry";
 
 export function TrackMapPanel({
   path,
@@ -46,18 +46,23 @@ export function TrackMapPanel({
 }) {
   const svgRef = React.useRef<SVGSVGElement | null>(null);
   const dragRef = React.useRef<MapDragState | null>(null);
-  const [viewBox, setViewBox] = React.useState<SvgViewBox>(() => defaultSessionMapViewBox());
-  const geometry = buildPathGeometry(path);
-  const cornerSegments = buildCornerSegments(path);
+  const lastScrubIndexRef = React.useRef<number | null>(null);
+  const [viewBox, setViewBox] = React.useState<SvgViewBox>(() => defaultRunMapViewBox());
+  const geometry = React.useMemo(() => buildPathGeometry(path), [path]);
+  const cornerSegments = React.useMemo(() => buildCornerSegments(path), [path]);
   const playheadCorner = playheadPathIndex === null ? null : cornerSegmentForIndex(cornerSegments, playheadPathIndex);
-  const renderSegments = buildPathRenderSegments(path, geometry.points);
-  const playheadCornerSegments = playheadCorner
-    ? buildSelectedCornerPhaseSegments(geometry.points, playheadCorner)
-    : [];
-  const progressPolyline = geometry.points
-    .slice(0, playheadPathIndex === null ? 0 : playheadPathIndex + 1)
-    .map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`)
-    .join(" ");
+  const renderSegments = React.useMemo(() => buildPathRenderSegments(path, geometry.points), [path, geometry.points]);
+  const playheadCornerSegments = React.useMemo(
+    () => playheadCorner ? buildSelectedCornerPhaseSegments(geometry.points, playheadCorner) : [],
+    [geometry.points, playheadCorner]
+  );
+  const progressPolyline = React.useMemo(
+    () => geometry.points
+      .slice(0, playheadPathIndex === null ? 0 : playheadPathIndex + 1)
+      .map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`)
+      .join(" "),
+    [geometry.points, playheadPathIndex]
+  );
   const latestPoint = geometry.points[geometry.points.length - 1];
   const latestSample = path[path.length - 1];
   const playheadPoint = playheadTelemetry && hasFinitePosition(playheadTelemetry)
@@ -74,7 +79,7 @@ export function TrackMapPanel({
 
   React.useEffect(() => {
     if (!currentPoint) {
-      setViewBox(defaultSessionMapViewBox());
+      setViewBox(defaultRunMapViewBox());
       return;
     }
 
@@ -102,8 +107,7 @@ export function TrackMapPanel({
         event.preventDefault();
         const cursor = clientPointToSvgPoint(svgRef.current, event);
         if (cursor && geometry.points.length) {
-          onHoverIndex(null);
-          onScrubPathIndex(nearestPointIndex(geometry.points, cursor));
+          scrubToPathIndex(nearestPointIndex(geometry.points, cursor));
         }
         return;
       }
@@ -134,6 +138,7 @@ export function TrackMapPanel({
   function handlePointerDown(event: React.PointerEvent<SVGSVGElement>) {
     if (!svgRef.current) return;
 
+    lastScrubIndexRef.current = null;
     const cursor = clientPointToSvgPoint(svgRef.current, event);
     const scrubIndex = cursor ? nearestPointIndexWithinThreshold(geometry.points, cursor, scrubThresholdSvgUnits()) : null;
 
@@ -148,8 +153,7 @@ export function TrackMapPanel({
     svgRef.current.setPointerCapture(event.pointerId);
     if (scrubIndex !== null) {
       event.preventDefault();
-      onHoverIndex(null);
-      onScrubPathIndex(scrubIndex);
+      scrubToPathIndex(scrubIndex);
     }
   }
 
@@ -161,20 +165,29 @@ export function TrackMapPanel({
     if (svgRef.current.hasPointerCapture(event.pointerId)) {
       svgRef.current.releasePointerCapture(event.pointerId);
     }
-    if (drag?.dragging || geometry.points.length === 0) return;
+    if (drag?.dragging || geometry.points.length === 0) {
+      lastScrubIndexRef.current = null;
+      return;
+    }
     if (drag?.mode === "scrub") {
       const cursor = clientPointToSvgPoint(svgRef.current, event);
-      if (cursor) onScrubPathIndex(nearestPointIndex(geometry.points, cursor));
+      if (cursor) scrubToPathIndex(nearestPointIndex(geometry.points, cursor));
+      lastScrubIndexRef.current = null;
       return;
     }
 
     const cursor = clientPointToSvgPoint(svgRef.current, event);
-    if (!cursor) return;
-    onScrubPathIndex(nearestPointIndex(geometry.points, cursor));
+    if (!cursor) {
+      lastScrubIndexRef.current = null;
+      return;
+    }
+    scrubToPathIndex(nearestPointIndex(geometry.points, cursor));
+    lastScrubIndexRef.current = null;
   }
 
   function handlePointerCancel(event: React.PointerEvent<SVGSVGElement>) {
     dragRef.current = null;
+    lastScrubIndexRef.current = null;
     if (svgRef.current?.hasPointerCapture(event.pointerId)) {
       svgRef.current.releasePointerCapture(event.pointerId);
     }
@@ -194,6 +207,13 @@ export function TrackMapPanel({
 
   function zoomMapFromSelectedPoint(factor: number) {
     setViewBox((current) => zoomViewBoxAtPoint(current, currentPoint ?? viewBoxCenter(current), factor));
+  }
+
+  function scrubToPathIndex(index: number) {
+    if (lastScrubIndexRef.current === index) return;
+    lastScrubIndexRef.current = index;
+    onHoverIndex(null);
+    onScrubPathIndex(index);
   }
 
   function scrubThresholdSvgUnits() {
@@ -275,7 +295,7 @@ export function TrackMapPanel({
               Waiting for position samples
             </text>
           )}
-          {hoverPoint && hoverSample ? (
+          {hoverPoint && hoverSample?.telemetry ? (
             <MfdCarMarker point={hoverPoint} telemetry={hoverSample.telemetry} variant="hover" scale={markerScale} />
           ) : null}
           {currentPoint && currentTelemetry ? (
@@ -302,7 +322,7 @@ export function TrackMapPanel({
           onReset={() => {
             setViewBox(currentPoint
               ? centerViewBoxAtPoint(currentPoint, MAP_IMAGE_WIDTH / CAR_FOLLOW_MAP_ZOOM, MAP_IMAGE_HEIGHT / CAR_FOLLOW_MAP_ZOOM)
-              : defaultSessionMapViewBox()
+              : defaultRunMapViewBox()
             );
           }}
         />

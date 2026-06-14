@@ -1,13 +1,11 @@
-import { clampNumber } from "@/lib/math";
-import type { PowerBandEstimate, Telemetry } from "@/types/telemetry";
-export type { PowerBandBin, PowerBandEstimate } from "@/types/telemetry";
+import type { PowerBandEstimate, Telemetry } from "../src/types/telemetry";
 
-export const POWER_BAND_MIN_THROTTLE_PCT = 98;
-export const POWER_BAND_MAX_BRAKE_PCT = 5;
-export const POWER_BAND_MAX_CLUTCH_PCT = 5;
-export const POWER_BAND_MAX_COMBINED_SLIP = 1.2;
+const POWER_BAND_MIN_THROTTLE_PCT = 98;
+const POWER_BAND_MAX_BRAKE_PCT = 5;
+const POWER_BAND_MAX_CLUTCH_PCT = 5;
+const POWER_BAND_MAX_COMBINED_SLIP = 1.2;
 
-export function estimatePowerBand(samples: Telemetry[]): PowerBandEstimate | null {
+export function estimatePowerBand(samples: Iterable<Telemetry>): PowerBandEstimate | null {
   const binSize = 250;
   const buckets = new Map<number, { count: number; powerHp: number; torqueNm: number; boost: number }>();
 
@@ -82,8 +80,4 @@ export function estimatePowerBand(samples: Telemetry[]): PowerBandEstimate | nul
     thresholdPercent,
     confidence
   };
-}
-
-export function rpmPercent(rpm: number, maxRpm: number) {
-  return clampNumber((rpm / Math.max(1, maxRpm)) * 100, 0, 100);
 }

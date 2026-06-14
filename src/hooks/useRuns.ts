@@ -1,22 +1,22 @@
 import * as React from "react";
-import { fetchRunDetail, fetchSessions } from "@/services/api";
-import type { RunDetail, RunSelection, SessionWithRuns } from "@/types/telemetry";
+import { fetchRunDetail, fetchRunGroups } from "@/services/api";
+import type { RunDateGroup, RunDetail, RunSelection } from "@/types/telemetry";
 
-export function useSessions() {
-  const [sessions, setSessions] = React.useState<SessionWithRuns[]>([]);
+export function useRuns() {
+  const [runGroups, setRunGroups] = React.useState<RunDateGroup[]>([]);
   const [selectedRunId, setSelectedRunId] = React.useState<RunSelection>("live");
   const [runDetail, setRunDetail] = React.useState<RunDetail | null>(null);
   const [isRunStreaming, setIsRunStreaming] = React.useState(false);
 
   React.useEffect(() => {
     let cancelled = false;
-    const loadSessions = async () => {
-      const nextSessions = await fetchSessions();
-      if (!cancelled) setSessions(nextSessions);
+    const loadRunGroups = async () => {
+      const nextRunGroups = await fetchRunGroups();
+      if (!cancelled) setRunGroups(nextRunGroups);
     };
 
-    loadSessions();
-    const interval = window.setInterval(loadSessions, 5000);
+    loadRunGroups();
+    const interval = window.setInterval(loadRunGroups, 5000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
@@ -53,8 +53,8 @@ export function useSessions() {
   }, [selectedRunId]);
 
   return {
-    sessions,
-    setSessions,
+    runGroups,
+    setRunGroups,
     selectedRunId,
     setSelectedRunId,
     runDetail,

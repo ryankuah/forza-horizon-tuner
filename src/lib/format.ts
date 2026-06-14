@@ -8,9 +8,9 @@ export function formatSignedPercent(value: number) {
 
 export function formatGear(value: number | undefined) {
   if (value === undefined || !Number.isFinite(value)) return "0";
-  if (value === 0) return "R";
-  if (value === 1) return "N";
-  return String(value - 1);
+  if (value === 0) return "N";
+  if (value === 1) return "R";
+  return String(value);
 }
 
 
@@ -22,8 +22,8 @@ export function drivetrainLabel(value: number | undefined) {
 }
 
 
-export function shortSessionId(sessionId: string) {
-  return sessionId.slice(0, 8);
+export function shortRunId(runId: string) {
+  return runId.slice(0, 8);
 }
 
 

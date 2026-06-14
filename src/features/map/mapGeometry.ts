@@ -33,7 +33,7 @@ export function clientPointToSvgPoint(svg: SVGSVGElement, event: { clientX: numb
 }
 
 
-export function defaultSessionMapViewBox(): SvgViewBox {
+export function defaultRunMapViewBox(): SvgViewBox {
   return centerViewBoxAtPoint(
     { x: MAP_IMAGE_WIDTH / 2, y: MAP_IMAGE_HEIGHT / 2 },
     MAP_IMAGE_WIDTH / CAR_FOLLOW_MAP_ZOOM,

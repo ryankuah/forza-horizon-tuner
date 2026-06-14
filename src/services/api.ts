@@ -1,7 +1,7 @@
 import type { CarCatalogQuery, RunDetail } from "@/types/telemetry";
 
-export async function fetchSessions() {
-  return window.telemetryApp.getSessions();
+export async function fetchRunGroups() {
+  return window.telemetryApp.getRunGroups();
 }
 
 

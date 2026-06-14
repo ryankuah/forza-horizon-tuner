@@ -4,8 +4,9 @@ import { randomUUID } from "node:crypto";
 import BetterSqliteDatabase from "better-sqlite3";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import type { RunSummary, SessionSummary, SessionWithRuns, Telemetry } from "../src/types/telemetry";
-import { runs, sessions, telemetryPackets } from "./schema";
+import type { PathSample, PowerBandEstimate, RunDateGroup, RunSampleWindow, RunSummary, Telemetry } from "../src/types/telemetry";
+import { runs, telemetryPackets } from "./schema";
+import { estimatePowerBand } from "./powerBand";
 
 const DEFAULT_DB_PATH = path.join(process.cwd(), "data", "telemetry.sqlite");
 
@@ -25,41 +26,14 @@ type BadPacketInput = {
   error: string;
 };
 
-function tableExists(sqlite: BetterSqliteDatabase.Database, name: string) {
-  return Boolean(sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
-}
-
-function tableColumns(sqlite: BetterSqliteDatabase.Database, name: string) {
-  return new Set((sqlite.prepare(`PRAGMA table_info(${name})`).all() as { name: string }[]).map((column) => column.name));
-}
-
 function createSchema(sqlite: BetterSqliteDatabase.Database) {
-  if (tableExists(sqlite, "sessions") && !tableExists(sqlite, "runs")) {
-    const columns = tableColumns(sqlite, "sessions");
-    if (columns.has("car_ordinal")) {
-      sqlite.exec("ALTER TABLE sessions RENAME TO runs;");
-    }
-  }
-
   sqlite.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
     PRAGMA foreign_keys = ON;
 
-    CREATE TABLE IF NOT EXISTS sessions (
-      id TEXT PRIMARY KEY,
-      started_at INTEGER NOT NULL,
-      last_packet_at INTEGER,
-      ended_at INTEGER,
-      packet_count INTEGER NOT NULL DEFAULT 0,
-      bad_packet_count INTEGER NOT NULL DEFAULT 0,
-      run_count INTEGER NOT NULL DEFAULT 0,
-      last_source TEXT
-    );
-
     CREATE TABLE IF NOT EXISTS runs (
       id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
       started_at INTEGER NOT NULL,
       last_packet_at INTEGER,
       ended_at INTEGER,
@@ -75,7 +49,7 @@ function createSchema(sqlite: BetterSqliteDatabase.Database) {
 
     CREATE TABLE IF NOT EXISTS telemetry_packets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
       received_at INTEGER NOT NULL,
       source TEXT,
       parse_ok INTEGER NOT NULL,
@@ -85,121 +59,31 @@ function createSchema(sqlite: BetterSqliteDatabase.Database) {
       parse_error TEXT
     );
 
-    CREATE INDEX IF NOT EXISTS idx_telemetry_packets_session_time
-      ON telemetry_packets(session_id, received_at);
+    CREATE INDEX IF NOT EXISTS idx_telemetry_packets_run_time
+      ON telemetry_packets(run_id, received_at);
 
-    CREATE INDEX IF NOT EXISTS idx_runs_session_time
-      ON runs(session_id, started_at);
-  `);
-
-  const runColumns = tableColumns(sqlite, "runs");
-  if (!runColumns.has("session_id")) sqlite.exec("ALTER TABLE runs ADD COLUMN session_id TEXT;");
-  if (!runColumns.has("split_reason")) sqlite.exec("ALTER TABLE runs ADD COLUMN split_reason TEXT;");
-
-  sqlite.exec(`
-    INSERT OR IGNORE INTO sessions (
-      id,
-      started_at,
-      last_packet_at,
-      ended_at,
-      packet_count,
-      bad_packet_count,
-      run_count,
-      last_source
-    )
-    SELECT
-      id,
-      started_at,
-      last_packet_at,
-      ended_at,
-      packet_count,
-      bad_packet_count,
-      1,
-      last_source
-    FROM runs
-    WHERE session_id IS NULL;
-
-    UPDATE runs
-    SET session_id = id,
-        split_reason = COALESCE(split_reason, 'legacy')
-    WHERE session_id IS NULL;
-  `);
-
-  migrateTelemetryPacketsToRunReferences(sqlite);
-}
-
-function migrateTelemetryPacketsToRunReferences(sqlite: BetterSqliteDatabase.Database) {
-  const foreignKeys = sqlite.prepare("PRAGMA foreign_key_list(telemetry_packets)").all() as { table: string; from: string }[];
-  const alreadyReferencesRuns = foreignKeys.some((foreignKey) => foreignKey.from === "session_id" && foreignKey.table === "runs");
-  if (alreadyReferencesRuns) return;
-
-  sqlite.exec(`
-    PRAGMA foreign_keys = OFF;
-
-    DROP TABLE IF EXISTS telemetry_packets_run_refs;
-
-    CREATE TABLE telemetry_packets_run_refs (
+    CREATE TABLE IF NOT EXISTS run_path_points (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-      received_at INTEGER NOT NULL,
-      source TEXT,
-      parse_ok INTEGER NOT NULL,
-      raw_packet BLOB,
-      raw_packet_size INTEGER NOT NULL,
-      telemetry_json TEXT,
-      parse_error TEXT
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      sample_index INTEGER NOT NULL,
+      x REAL NOT NULL,
+      z REAL NOT NULL,
+      speed_kmh REAL NOT NULL,
+      at INTEGER NOT NULL
     );
 
-    INSERT INTO telemetry_packets_run_refs (
-      id,
-      session_id,
-      received_at,
-      source,
-      parse_ok,
-      raw_packet,
-      raw_packet_size,
-      telemetry_json,
-      parse_error
-    )
-    SELECT
-      packet.id,
-      COALESCE(
-        matching_run.id,
-        (
-          SELECT fallback_run.id
-          FROM runs fallback_run
-          WHERE fallback_run.session_id = packet.session_id
-          ORDER BY fallback_run.started_at
-          LIMIT 1
-        )
-      ),
-      packet.received_at,
-      packet.source,
-      packet.parse_ok,
-      packet.raw_packet,
-      packet.raw_packet_size,
-      packet.telemetry_json,
-      packet.parse_error
-    FROM telemetry_packets packet
-    LEFT JOIN runs matching_run ON matching_run.id = packet.session_id
-    WHERE COALESCE(
-      matching_run.id,
-      (
-        SELECT fallback_run.id
-        FROM runs fallback_run
-        WHERE fallback_run.session_id = packet.session_id
-        ORDER BY fallback_run.started_at
-        LIMIT 1
-      )
-    ) IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_run_path_points_run_sample
+      ON run_path_points(run_id, sample_index);
 
-    DROP TABLE telemetry_packets;
-    ALTER TABLE telemetry_packets_run_refs RENAME TO telemetry_packets;
+    CREATE TABLE IF NOT EXISTS run_power_analysis (
+      run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+      packet_count INTEGER NOT NULL,
+      analysis_json TEXT,
+      updated_at INTEGER NOT NULL
+    );
 
-    CREATE INDEX IF NOT EXISTS idx_telemetry_packets_session_time
-      ON telemetry_packets(session_id, received_at);
-
-    PRAGMA foreign_keys = ON;
+    CREATE INDEX IF NOT EXISTS idx_runs_started_at
+      ON runs(started_at);
   `);
 }
 
@@ -209,43 +93,19 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
   const sqlite = new BetterSqliteDatabase(dbPath);
   createSchema(sqlite);
 
-  const db = drizzle(sqlite, { schema: { runs, sessions, telemetryPackets } });
+  const db = drizzle(sqlite, { schema: { runs, telemetryPackets } });
 
   return {
     path: dbPath,
 
-    startSession(startedAt = Date.now(), id: string = randomUUID()) {
-      db.insert(sessions).values({
-        id,
-        startedAt,
-        lastPacketAt: startedAt
-      }).run();
-      return { id, startedAt };
-    },
-
-    endSession(sessionId: string, endedAt = Date.now()) {
-      db.update(sessions)
-        .set({ endedAt })
-        .where(and(eq(sessions.id, sessionId), isNull(sessions.endedAt)))
-        .run();
-    },
-
-    startRun(sessionId: string, startedAt = Date.now(), id: string = randomUUID(), splitReason = "start") {
+    startRun(startedAt = Date.now(), id: string = randomUUID(), splitReason = "start") {
       db.insert(runs).values({
         id,
-        sessionId,
         startedAt,
         lastPacketAt: startedAt,
         splitReason
       }).run();
-      db.update(sessions)
-        .set({
-          lastPacketAt: startedAt,
-          runCount: sql`${sessions.runCount} + 1`
-        })
-        .where(eq(sessions.id, sessionId))
-        .run();
-      return { id, sessionId, startedAt };
+      return { id, startedAt };
     },
 
     endRun(runId: string, endedAt = Date.now()) {
@@ -256,8 +116,10 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
     },
 
     recordValidPacket({ runId, receivedAt, source, rawPacket, telemetry }: ValidPacketInput) {
+      const sampleIndex = (sqlite.prepare("SELECT packet_count AS packetCount FROM runs WHERE id = ?").get(runId) as { packetCount?: number } | undefined)?.packetCount ?? 0;
+
       db.insert(telemetryPackets).values({
-        sessionId: runId,
+        runId,
         receivedAt,
         source,
         parseOk: true,
@@ -266,6 +128,24 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
         telemetryJson: JSON.stringify(telemetry),
         parseError: null
       }).run();
+
+      if (
+        telemetry.IsRaceOn === 1
+        && Number.isFinite(telemetry.PositionX)
+        && Number.isFinite(telemetry.PositionZ)
+      ) {
+        sqlite.prepare(`
+          INSERT INTO run_path_points (run_id, sample_index, x, z, speed_kmh, at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(
+          runId,
+          sampleIndex,
+          telemetry.PositionX,
+          telemetry.PositionZ,
+          telemetry.speedKmh || 0,
+          telemetry.receivedAt || receivedAt
+        );
+      }
 
       db.update(runs)
         .set({
@@ -280,19 +160,11 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
         .where(eq(runs.id, runId))
         .run();
 
-      db.update(sessions)
-        .set({
-          lastPacketAt: receivedAt,
-          packetCount: sql`${sessions.packetCount} + 1`,
-          lastSource: source
-        })
-        .where(eq(sessions.id, sql`(SELECT session_id FROM runs WHERE id = ${runId})`))
-        .run();
     },
 
     recordBadPacket({ runId, receivedAt, source, rawPacket, error }: BadPacketInput) {
       db.insert(telemetryPackets).values({
-        sessionId: runId,
+        runId,
         receivedAt,
         source,
         parseOk: false,
@@ -311,38 +183,16 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
         .where(eq(runs.id, runId))
         .run();
 
-      db.update(sessions)
-        .set({
-          lastPacketAt: receivedAt,
-          badPacketCount: sql`${sessions.badPacketCount} + 1`,
-          lastSource: source
-        })
-        .where(eq(sessions.id, sql`(SELECT session_id FROM runs WHERE id = ${runId})`))
-        .run();
     },
 
-    listSessions(): SessionWithRuns[] {
-      const sessionRows = db.select()
-        .from(sessions)
-        .where(sql`${sessions.packetCount} > 0`)
-        .orderBy(desc(sessions.startedAt))
-        .all() as SessionSummary[];
-
-      if (!sessionRows.length) return [];
-
+    listRunGroups(): RunDateGroup[] {
       const runRows = db.select()
         .from(runs)
-        .where(and(
-          inArray(runs.sessionId, sessionRows.map((session) => session.id)),
-          sql`${runs.packetCount} > 0`
-        ))
+        .where(sql`${runs.packetCount} > 0`)
         .orderBy(desc(runs.startedAt))
         .all() as RunSummary[];
 
-      return sessionRows.map((session) => ({
-        session,
-        runs: runRows.filter((run) => run.sessionId === session.id)
-      })).filter((group) => group.runs.length > 0);
+      return groupRunsByDate(runRows);
     },
 
     getRun(runId: string): RunSummary | null {
@@ -356,7 +206,7 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
       return db.select({ telemetryJson: telemetryPackets.telemetryJson })
         .from(telemetryPackets)
         .where(and(
-          eq(telemetryPackets.sessionId, runId),
+          eq(telemetryPackets.runId, runId),
           eq(telemetryPackets.parseOk, true),
           sql`${telemetryPackets.telemetryJson} IS NOT NULL`
         ))
@@ -366,18 +216,120 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
         .map((row) => JSON.parse(row.telemetryJson ?? "{}") as Telemetry);
     },
 
+    getSampleWindow(runId: string, start: number, limit = 3000): RunSampleWindow {
+      const total = (sqlite.prepare(`
+        SELECT COUNT(*) AS total
+        FROM telemetry_packets
+        WHERE run_id = ?
+          AND parse_ok = 1
+          AND telemetry_json IS NOT NULL
+      `).get(runId) as { total?: number } | undefined)?.total ?? 0;
+      const clampedLimit = Math.min(20000, Math.max(1, Math.round(limit)));
+      const clampedStart = Math.min(Math.max(0, Math.round(start)), Math.max(0, total - clampedLimit));
+      const rows = sqlite.prepare(`
+        SELECT telemetry_json AS telemetryJson
+        FROM telemetry_packets
+        WHERE run_id = ?
+          AND parse_ok = 1
+          AND telemetry_json IS NOT NULL
+        ORDER BY received_at
+        LIMIT ? OFFSET ?
+      `).all(runId, clampedLimit, clampedStart) as { telemetryJson: string }[];
+
+      return {
+        start: clampedStart,
+        total,
+        samples: rows.map((row) => JSON.parse(row.telemetryJson) as Telemetry)
+      };
+    },
+
+    getPathPoints(runId: string): PathSample[] {
+      const rows = sqlite.prepare(`
+        SELECT sample_index AS sampleIndex, x, z, speed_kmh AS speedKmh, at
+        FROM run_path_points
+        WHERE run_id = ?
+        ORDER BY sample_index
+      `).all(runId) as Omit<PathSample, "telemetry">[];
+
+      return rows.map((row) => ({ ...row, telemetry: null }));
+    },
+
+    ensurePathPoints(runId: string) {
+      const existing = (sqlite.prepare("SELECT COUNT(*) AS total FROM run_path_points WHERE run_id = ?").get(runId) as { total?: number } | undefined)?.total ?? 0;
+      if (existing > 0) return;
+
+      const insert = sqlite.prepare(`
+        INSERT INTO run_path_points (run_id, sample_index, x, z, speed_kmh, at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      const transaction = sqlite.transaction(() => {
+        let sampleIndex = 0;
+        for (const row of this.iterateSampleJson(runId)) {
+          const telemetry = JSON.parse(row.telemetryJson) as Telemetry;
+          if (
+            telemetry.IsRaceOn === 1
+            && Number.isFinite(telemetry.PositionX)
+            && Number.isFinite(telemetry.PositionZ)
+          ) {
+            insert.run(
+              runId,
+              sampleIndex,
+              telemetry.PositionX,
+              telemetry.PositionZ,
+              telemetry.speedKmh || 0,
+              telemetry.receivedAt || Date.now()
+            );
+          }
+          sampleIndex += 1;
+        }
+      });
+
+      transaction();
+    },
+
+    getPowerBand(runId: string): PowerBandEstimate | null {
+      const run = this.getRun(runId);
+      if (!run) return null;
+
+      const existing = sqlite.prepare(`
+        SELECT packet_count AS packetCount, analysis_json AS analysisJson
+        FROM run_power_analysis
+        WHERE run_id = ?
+      `).get(runId) as { packetCount?: number; analysisJson?: string | null } | undefined;
+
+      if (existing && existing.packetCount === run.packetCount) {
+        return existing.analysisJson ? JSON.parse(existing.analysisJson) as PowerBandEstimate : null;
+      }
+
+      const samples = (function* (rows: Iterable<{ telemetryJson: string }>) {
+        for (const row of rows) yield JSON.parse(row.telemetryJson) as Telemetry;
+      })(this.iterateSampleJson(runId));
+      const estimate = estimatePowerBand(samples);
+
+      sqlite.prepare(`
+        INSERT INTO run_power_analysis (run_id, packet_count, analysis_json, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(run_id) DO UPDATE SET
+          packet_count = excluded.packet_count,
+          analysis_json = excluded.analysis_json,
+          updated_at = excluded.updated_at
+      `).run(runId, run.packetCount, estimate ? JSON.stringify(estimate) : null, Date.now());
+
+      return estimate;
+    },
+
     iterateSampleJson(runId: string): Iterable<{ telemetryJson: string }> {
       return sqlite.prepare(`
         SELECT telemetry_json AS telemetryJson
         FROM telemetry_packets
-        WHERE session_id = ?
+        WHERE run_id = ?
           AND parse_ok = 1
           AND telemetry_json IS NOT NULL
         ORDER BY received_at
       `).iterate(runId) as Iterable<{ telemetryJson: string }>;
     },
 
-    deleteEmptyRunsAndSessions() {
+    deleteEmptyRuns() {
       const cleanup = sqlite.transaction(() => {
         const emptyRuns = db.select({ id: runs.id })
           .from(runs)
@@ -387,28 +339,36 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
         if (emptyRuns.length) {
           const emptyRunIds = emptyRuns.map((run) => run.id);
           db.delete(telemetryPackets)
-            .where(inArray(telemetryPackets.sessionId, emptyRunIds))
+            .where(inArray(telemetryPackets.runId, emptyRunIds))
             .run();
           db.delete(runs)
             .where(inArray(runs.id, emptyRunIds))
             .run();
         }
 
-        const emptySessions = db.select({ id: sessions.id })
-          .from(sessions)
-          .where(eq(sessions.packetCount, 0))
-          .all();
-
-        if (emptySessions.length) {
-          db.delete(sessions)
-            .where(inArray(sessions.id, emptySessions.map((session) => session.id)))
-            .run();
-        }
-
-        return emptyRuns.length + emptySessions.length;
+        return emptyRuns.length;
       });
 
       return cleanup();
     }
   };
+}
+
+function groupRunsByDate(runRows: RunSummary[]): RunDateGroup[] {
+  const groups = new Map<string, RunDateGroup>();
+
+  for (const run of runRows) {
+    const date = new Date(run.startedAt);
+    date.setHours(0, 0, 0, 0);
+    const dateStart = date.getTime();
+    const dateKey = date.toISOString();
+    const group = groups.get(dateKey);
+    if (group) {
+      group.runs.push(run);
+    } else {
+      groups.set(dateKey, { dateKey, dateStart, runs: [run] });
+    }
+  }
+
+  return Array.from(groups.values());
 }

@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { CornerEffect, PathSample, Telemetry } from "@/types/telemetry";
+import type { CornerEffect, PathSample, SvgPoint, Telemetry } from "@/types/telemetry";
 import { average, clampNumber } from "@/lib/math";
 import { formatValue } from "@/lib/format";
 import { buildPathFromTelemetry } from "@/features/map/pathSamples";
@@ -20,6 +20,7 @@ type CornerBehaviorSummary = {
   effect: Exclude<CornerEffect, "straight">;
   distanceMeters: number;
   avgSpeedKmh: number;
+  pathPoints: SvgPoint[];
   phases: CornerPhaseSummary[];
 };
 
@@ -85,6 +86,8 @@ function CornerBehaviorCard({ corner }: { corner: CornerBehaviorSummary }) {
         </div>
       </div>
 
+      <CornerOverviewGraphic corner={corner} />
+
       <div className="grid gap-3 xl:grid-cols-3">
         {corner.phases.map((phase) => (
           <CornerPhaseGraph key={phase.id} phase={phase} />
@@ -92,6 +95,190 @@ function CornerBehaviorCard({ corner }: { corner: CornerBehaviorSummary }) {
       </div>
     </section>
   );
+}
+
+function CornerOverviewGraphic({ corner }: { corner: CornerBehaviorSummary }) {
+  const pathData = svgPathData(corner.pathPoints);
+  const phaseSegments = buildCornerGraphicPhaseSegments(corner.pathPoints);
+  const entryPoint = corner.pathPoints[0] ?? { x: 54, y: 120 };
+  const midPoint = pointAtPathProgress(corner.pathPoints, 0.5);
+  const exitPoint = corner.pathPoints[corner.pathPoints.length - 1] ?? { x: 306, y: 120 };
+  const direction = directionIndicator(corner.pathPoints);
+  const turnLabel = corner.effect === "leftCorner" ? "Left corner" : "Right corner";
+  const phaseMarkers: { id: TuningPhaseId; point: { x: number; y: number } }[] = [
+    { id: "entry", point: entryPoint },
+    { id: "mid", point: midPoint },
+    { id: "exit", point: exitPoint }
+  ];
+
+  return (
+    <section className="grid min-w-0 gap-3 rounded-md bg-white/[0.025] p-3 md:grid-cols-[minmax(0,1fr)_190px] md:items-center">
+      <svg className="h-44 w-full overflow-visible" viewBox="0 0 360 170" role="img" aria-label={`${corner.label} analyzed track corner with entry mid-corner and exit`}>
+        <rect x="8" y="12" width="344" height="146" rx="8" fill="rgba(245,247,246,0.025)" stroke="rgba(245,247,246,0.08)" />
+        <path d={pathData} fill="none" stroke="rgba(245,247,246,0.18)" strokeWidth="24" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={pathData} fill="none" stroke="rgba(245,247,246,0.55)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="10 12" />
+        <path d={pathData} fill="none" stroke={corner.effect === "leftCorner" ? "#63da97" : "#e46645"} strokeWidth="12" strokeLinecap="round" strokeLinejoin="round" opacity="0.2" />
+        {phaseSegments.map((segment) => (
+          <polyline
+            key={segment.id}
+            points={segment.points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}
+            fill="none"
+            stroke={phaseColor(segment.id)}
+            strokeWidth="7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        ))}
+        <path d={direction.path} fill="none" stroke="#f5f7f6" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" opacity="0.9" />
+        {phaseMarkers.map((marker) => (
+          <g key={marker.id}>
+            <circle cx={marker.point.x} cy={marker.point.y} r="8" fill="#171717" stroke={phaseColor(marker.id)} strokeWidth="3" />
+            <circle cx={marker.point.x} cy={marker.point.y} r="3" fill={phaseColor(marker.id)} />
+          </g>
+        ))}
+        <text x={labelX(entryPoint)} y={labelY(entryPoint)} textAnchor="middle" className="fill-[#9ba6a1] text-[10px] font-black uppercase tracking-wide">Entry</text>
+        <text x={labelX(midPoint)} y={labelY(midPoint, -12)} textAnchor="middle" className="fill-[#9ba6a1] text-[10px] font-black uppercase tracking-wide">Mid</text>
+        <text x={labelX(exitPoint)} y={labelY(exitPoint)} textAnchor="middle" className="fill-[#9ba6a1] text-[10px] font-black uppercase tracking-wide">Exit</text>
+      </svg>
+
+      <div className="grid gap-3">
+        <div className="grid gap-1">
+          <span className="text-[10px] font-black uppercase tracking-wide text-[#9ba6a1]">Analyzed segment</span>
+          <strong className="text-sm leading-tight text-[#f5f7f6]">{turnLabel}</strong>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {corner.phases.map((phase) => (
+            <div key={phase.id} className="grid gap-1">
+              <span className="h-1.5 rounded-full" style={{ backgroundColor: phaseColor(phase.id) }} />
+              <span className="text-[10px] font-black uppercase leading-none tracking-wide text-[#9ba6a1]">{phase.label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function normalizeCornerPath(path: PathSample[]) {
+  const width = 360;
+  const height = 170;
+  const paddingX = 32;
+  const paddingY = 26;
+  const sourcePoints = downsamplePathSamples(path, 120).map((sample) => ({ x: sample.x, y: -sample.z }));
+  if (sourcePoints.length === 0) return [];
+
+  const minX = Math.min(...sourcePoints.map((point) => point.x));
+  const maxX = Math.max(...sourcePoints.map((point) => point.x));
+  const minY = Math.min(...sourcePoints.map((point) => point.y));
+  const maxY = Math.max(...sourcePoints.map((point) => point.y));
+  const sourceWidth = Math.max(1, maxX - minX);
+  const sourceHeight = Math.max(1, maxY - minY);
+  const scale = Math.min((width - paddingX * 2) / sourceWidth, (height - paddingY * 2) / sourceHeight);
+  const renderedWidth = sourceWidth * scale;
+  const renderedHeight = sourceHeight * scale;
+  const offsetX = (width - renderedWidth) / 2;
+  const offsetY = (height - renderedHeight) / 2;
+
+  return sourcePoints.map((point) => ({
+    x: offsetX + (point.x - minX) * scale,
+    y: offsetY + (point.y - minY) * scale
+  }));
+}
+
+function downsamplePathSamples(path: PathSample[], maxPoints: number) {
+  if (path.length <= maxPoints) return path;
+
+  const result: PathSample[] = [];
+  const step = (path.length - 1) / (maxPoints - 1);
+  for (let index = 0; index < maxPoints; index += 1) {
+    result.push(path[Math.round(index * step)]);
+  }
+  return result;
+}
+
+function svgPathData(points: SvgPoint[]) {
+  if (points.length === 0) return "";
+  return points.map((point, index) => `${index === 0 ? "M" : "L"}${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(" ");
+}
+
+function buildCornerGraphicPhaseSegments(points: SvgPoint[]): { id: TuningPhaseId; points: SvgPoint[] }[] {
+  const segments: { id: TuningPhaseId; points: SvgPoint[] }[] = [];
+  if (points.length < 2) return segments;
+
+  const distances = cumulativePointDistances(points);
+  const totalDistance = distances[distances.length - 1] ?? 0;
+  if (totalDistance <= 0) return [{ id: "mid", points }];
+
+  for (let index = 1; index < points.length; index += 1) {
+    const phaseId = phaseAtCornerProgress((distances[index] ?? 0) / totalDistance);
+    const previousPoint = points[index - 1];
+    const point = points[index];
+    const current = segments[segments.length - 1];
+
+    if (current && current.id === phaseId) {
+      current.points.push(point);
+    } else {
+      segments.push({ id: phaseId, points: [previousPoint, point] });
+    }
+  }
+
+  return segments;
+}
+
+function pointAtPathProgress(points: SvgPoint[], progress: number) {
+  if (points.length === 0) return { x: 180, y: 85 };
+  if (points.length === 1) return points[0];
+
+  const distances = cumulativePointDistances(points);
+  const totalDistance = distances[distances.length - 1] ?? 0;
+  const targetDistance = totalDistance * clampNumber(progress, 0, 1);
+  const index = distances.findIndex((distance) => distance >= targetDistance);
+  if (index <= 0) return points[0];
+
+  const previousDistance = distances[index - 1] ?? 0;
+  const segmentDistance = Math.max(1, (distances[index] ?? 0) - previousDistance);
+  const ratio = (targetDistance - previousDistance) / segmentDistance;
+  const previousPoint = points[index - 1];
+  const point = points[index];
+  return {
+    x: previousPoint.x + (point.x - previousPoint.x) * ratio,
+    y: previousPoint.y + (point.y - previousPoint.y) * ratio
+  };
+}
+
+function directionIndicator(points: SvgPoint[]) {
+  const from = pointAtPathProgress(points, 0.58);
+  const to = pointAtPathProgress(points, 0.66);
+  const angle = Math.atan2(to.y - from.y, to.x - from.x);
+  const size = 14;
+  const left = {
+    x: to.x - Math.cos(angle - 0.65) * size,
+    y: to.y - Math.sin(angle - 0.65) * size
+  };
+  const right = {
+    x: to.x - Math.cos(angle + 0.65) * size,
+    y: to.y - Math.sin(angle + 0.65) * size
+  };
+
+  return {
+    path: `M${left.x.toFixed(1)} ${left.y.toFixed(1)} L${to.x.toFixed(1)} ${to.y.toFixed(1)} L${right.x.toFixed(1)} ${right.y.toFixed(1)}`
+  };
+}
+
+function cumulativePointDistances(points: SvgPoint[]) {
+  const distances = new Array<number>(points.length).fill(0);
+  for (let index = 1; index < points.length; index += 1) {
+    distances[index] = distances[index - 1] + Math.hypot(points[index].x - points[index - 1].x, points[index].y - points[index - 1].y);
+  }
+  return distances;
+}
+
+function labelX(point: SvgPoint) {
+  return clampNumber(point.x, 34, 326);
+}
+
+function labelY(point: SvgPoint, offset = 24) {
+  return clampNumber(point.y + offset, 24, 150);
 }
 
 function CornerPhaseGraph({ phase }: { phase: CornerPhaseSummary }) {
@@ -203,12 +390,14 @@ function SlipBalanceChart({ phase }: { phase: CornerPhaseSummary }) {
         <text x="0" y="11" className="fill-[#e46645] text-[10px] font-black uppercase tracking-wide">Oversteer</text>
         <text x={width / 2} y={balanceToChartY(0, chartTop, slipChartHeight) - 5} textAnchor="middle" className="fill-[#9ba6a1] text-[10px] font-black uppercase tracking-wide">Neutral</text>
         <text x="0" y={inputChartTop - 16} className="fill-[#f3d09b] text-[10px] font-black uppercase tracking-wide">Understeer</text>
+        <g transform={`translate(96 ${inputChartTop - 8})`}>
+          <LegendItem x={0} color="#59a7ff" label="Front slip" />
+          <LegendItem x={110} color="#e46645" label="Rear slip" />
+        </g>
         <text x="0" y={inputChartTop - 4} className="fill-[#9ba6a1] text-[9px] font-black uppercase tracking-wide">Inputs</text>
         <g transform={`translate(0 ${inputChartBottom + 27})`}>
-          <LegendItem x={0} color="#59a7ff" label="Front slip" />
-          <LegendItem x={88} color="#e46645" label="Rear slip" />
-          <LegendItem x={172} color="#f5f7f6" label="Balance" />
-          <LegendItem x={250} color="#63da97" label="Throttle" />
+          <LegendItem x={0} color="#f5f7f6" label="Balance" />
+          <LegendItem x={88} color="#63da97" label="Throttle" />
         </g>
       </svg>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px] font-black uppercase tracking-wide text-[#9ba6a1]">
@@ -341,6 +530,7 @@ function summarizeCorner(id: number, effect: Exclude<CornerEffect, "straight">, 
     effect,
     distanceMeters: totalDistance,
     avgSpeedKmh: speedCount > 0 ? speedKmhTotal / speedCount : 0,
+    pathPoints: normalizeCornerPath(pathSamples),
     phases: TUNING_PHASES.map((phase) => summarizeCornerPhase(phase, phaseBuckets.get(phase.id), pathSamples.length))
   };
 }

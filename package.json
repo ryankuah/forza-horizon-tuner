@@ -1,6 +1,6 @@
 {
   "name": "forza-horizon-tuner",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Local telemetry dashboard and setup advisor for Forza Horizon.",
   "author": {
     "name": "Ryan Kuah",
@@ -59,10 +59,23 @@
         "releaseType": "release"
       }
     ],
+    "dmg": {
+      "artifactName": "Forza.Horizon.Tuner-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "artifactName": "Forza.Horizon.Tuner.Setup.${version}.${ext}"
+    },
+    "appImage": {
+      "artifactName": "Forza.Horizon.Tuner-${version}.${ext}"
+    },
+    "deb": {
+      "artifactName": "Forza.Horizon.Tuner-${version}-${arch}.${ext}"
+    },
     "mac": {
       "category": "public.app-category.utilities",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
+      "artifactName": "Forza.Horizon.Tuner-${version}-${arch}-${os}.${ext}",
       "target": [
         "dmg",
         "zip"
@@ -75,6 +88,7 @@
     },
     "linux": {
       "category": "Utility",
+      "artifactName": "Forza.Horizon.Tuner-${version}-${arch}.${ext}",
       "target": [
         "AppImage",
         "deb"

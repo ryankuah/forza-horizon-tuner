@@ -1,5 +1,9 @@
 # Agent Instructions
 
+## Local Web Testing
+
+Do not start the local web/dev server or use browser-based testing for this app. The web renderer does not currently run cleanly in that flow. Prefer static checks such as `npm run typecheck` when verification is needed.
+
 ## macOS Signing And Releases
 
 The release workflow builds macOS, Windows, and Linux artifacts. macOS artifacts must be signed with a **Developer ID Application** certificate and notarized, otherwise downloaded apps may show macOS Gatekeeper's "damaged and can't be opened" dialog.
@@ -91,4 +95,3 @@ security import path/to/developer_id_application.p12 \
   -T /usr/bin/productbuild
 security delete-keychain /tmp/test-signing.keychain-db
 ```
-
