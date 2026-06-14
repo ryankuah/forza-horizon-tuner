@@ -10,6 +10,7 @@ import { CAR_FOLLOW_MAP_ZOOM, MAP_DRAG_THRESHOLD_PX, MAP_IMAGE_HEIGHT, MAP_IMAGE
 export function TrackMapPanel({
   path,
   hoverIndex,
+  hoverTelemetry,
   playheadPathIndex,
   playheadTelemetry,
   isPlaying,
@@ -28,6 +29,7 @@ export function TrackMapPanel({
 }: {
   path: PathSample[];
   hoverIndex: number | null;
+  hoverTelemetry: Telemetry | null;
   playheadPathIndex: number | null;
   playheadTelemetry: Telemetry | null;
   isPlaying: boolean;
@@ -72,6 +74,10 @@ export function TrackMapPanel({
   const currentTelemetry = playheadTelemetry ?? latestSample?.telemetry ?? null;
   const hoverPoint = hoverIndex === null ? null : geometry.points[hoverIndex];
   const hoverSample = hoverIndex === null ? null : path[hoverIndex];
+  const resolvedHoverTelemetry = hoverTelemetry ?? hoverSample?.telemetry ?? null;
+  const hoverRotation = hoverIndex === null || resolvedHoverTelemetry
+    ? undefined
+    : pathTangentSvgDegrees(geometry.points, hoverIndex);
   const canZoomIn = viewBox.width > geometry.width / MAX_MAP_ZOOM;
   const canZoomOut = viewBox.width < geometry.width;
   const zoomPct = mapZoomPercent(viewBox);
@@ -132,7 +138,7 @@ export function TrackMapPanel({
 
     const cursor = clientPointToSvgPoint(svgRef.current, event);
     if (!cursor) return;
-    onHoverIndex(nearestPointIndexWithinThreshold(geometry.points, cursor, scrubThresholdSvgUnits()));
+    onHoverIndex(nearestPathIndexWithinThreshold(geometry.points, cursor, scrubThresholdSvgUnits()));
   }
 
   function handlePointerDown(event: React.PointerEvent<SVGSVGElement>) {
@@ -140,7 +146,7 @@ export function TrackMapPanel({
 
     lastScrubIndexRef.current = null;
     const cursor = clientPointToSvgPoint(svgRef.current, event);
-    const scrubIndex = cursor ? nearestPointIndexWithinThreshold(geometry.points, cursor, scrubThresholdSvgUnits()) : null;
+    const scrubIndex = cursor ? nearestPathIndexWithinThreshold(geometry.points, cursor, scrubThresholdSvgUnits()) : null;
 
     dragRef.current = {
       pointerId: event.pointerId,
@@ -295,8 +301,8 @@ export function TrackMapPanel({
               Waiting for position samples
             </text>
           )}
-          {hoverPoint && hoverSample?.telemetry ? (
-            <MfdCarMarker point={hoverPoint} telemetry={hoverSample.telemetry} variant="hover" scale={markerScale} />
+          {hoverPoint ? (
+            <MfdCarMarker point={hoverPoint} telemetry={resolvedHoverTelemetry} fallbackRotation={hoverRotation} variant="hover" scale={markerScale} />
           ) : null}
           {currentPoint && currentTelemetry ? (
             <MfdCarMarker point={currentPoint} telemetry={currentTelemetry} variant="selected" scale={markerScale} />
@@ -336,36 +342,70 @@ function hasFinitePosition(telemetry: Telemetry) {
   return Number.isFinite(telemetry.PositionX) && Number.isFinite(telemetry.PositionZ);
 }
 
-function nearestPointIndexWithinThreshold(points: SvgPoint[], cursor: SvgPoint, threshold: number) {
+function nearestPathIndexWithinThreshold(points: SvgPoint[], cursor: SvgPoint, threshold: number) {
   if (!points.length) return null;
 
   let bestIndex = 0;
   let bestDistance = Infinity;
 
-  for (let index = 0; index < points.length; index += 1) {
-    const point = points[index];
-    const distance = (point.x - cursor.x) ** 2 + (point.y - cursor.y) ** 2;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const segment = nearestPointOnSegment(cursor, points[index], points[index + 1]);
+    const distance = segment.distanceSquared;
     if (distance < bestDistance) {
       bestDistance = distance;
-      bestIndex = index;
+      bestIndex = segment.t < 0.5 ? index : index + 1;
     }
+  }
+
+  if (points.length === 1) {
+    bestDistance = (points[0].x - cursor.x) ** 2 + (points[0].y - cursor.y) ** 2;
   }
 
   return bestDistance <= threshold ** 2 ? bestIndex : null;
 }
 
+function nearestPointOnSegment(cursor: SvgPoint, start: SvgPoint, end: SvgPoint) {
+  const deltaX = end.x - start.x;
+  const deltaY = end.y - start.y;
+  const lengthSquared = deltaX ** 2 + deltaY ** 2;
+  const t = lengthSquared === 0
+    ? 0
+    : clampNumber(((cursor.x - start.x) * deltaX + (cursor.y - start.y) * deltaY) / lengthSquared, 0, 1);
+  const x = start.x + deltaX * t;
+  const y = start.y + deltaY * t;
+
+  return {
+    t,
+    distanceSquared: (cursor.x - x) ** 2 + (cursor.y - y) ** 2
+  };
+}
+
+function pathTangentSvgDegrees(points: SvgPoint[], index: number) {
+  const start = points[Math.max(0, index - 1)] ?? points[index];
+  const end = points[Math.min(points.length - 1, index + 1)] ?? points[index];
+  if (!start || !end) return 0;
+
+  const deltaX = end.x - start.x;
+  const deltaY = end.y - start.y;
+  if (deltaX === 0 && deltaY === 0) return 0;
+
+  return (Math.atan2(deltaX, -deltaY) * 180) / Math.PI;
+}
+
 function MfdCarMarker({
   point,
   telemetry,
+  fallbackRotation,
   variant,
   scale
 }: {
   point: SvgPoint;
-  telemetry: Telemetry;
+  telemetry: Telemetry | null;
+  fallbackRotation?: number;
   variant: "current" | "hover" | "selected";
   scale: number;
 }) {
-  const rotation = yawToSvgDegrees(telemetry.Yaw);
+  const rotation = telemetry ? yawToSvgDegrees(telemetry.Yaw) : fallbackRotation ?? 0;
   const tires = buildTireMfdData(telemetry);
   const tireLayout = [
     { id: "front-left", x: -8, y: -12 },

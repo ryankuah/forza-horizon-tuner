@@ -1,70 +1,86 @@
 import * as React from "react";
 import type { CornerEffect, PathSample, SvgPoint, Telemetry } from "@/types/telemetry";
-import { average, clampNumber } from "@/lib/math";
+import { average, clampNumber, radiansToDegrees } from "@/lib/math";
 import { formatValue } from "@/lib/format";
 import { buildPathFromTelemetry } from "@/features/map/pathSamples";
 import { buildCornerSegments, frontTireSlipAngle, rearTireSlipAngle } from "@/features/map/cornerAnalysis";
-import { metricToneClass } from "./TelemetryPanelPrimitives";
+import {
+  pathDistanceMeters,
+  SectionTraceChart,
+  type SectionMetric,
+  type TraceSeries
+} from "./TrackSectionGraphs";
 
 type TuningPhaseId = "entry" | "mid" | "exit";
-type BalanceTendency = "understeer" | "oversteer" | "neutral" | "unknown";
 
-type TuningPhaseDefinition = {
-  id: TuningPhaseId;
-  label: string;
-};
-
-type CornerBehaviorSummary = {
+type CornerSummary = {
   id: number;
   label: string;
   effect: Exclude<CornerEffect, "straight">;
-  distanceMeters: number;
-  avgSpeedKmh: number;
+  samples: PathSample[];
   pathPoints: SvgPoint[];
-  phases: CornerPhaseSummary[];
+  metrics: SectionMetric[];
 };
 
-type CornerPhaseSummary = {
-  id: TuningPhaseId;
-  label: string;
-  tendency: BalanceTendency;
-  balanceScore: number;
-  percent: number;
-  points: CornerGraphPoint[];
-  understeerPercent: number;
-  oversteerPercent: number;
-  neutralPercent: number;
-};
+const PERCENT_DOMAIN = [0, 100] as const;
+const NORMALIZED_DOMAIN = [0, 1] as const;
+const LATERAL_G_DOMAIN = [0, 2] as const;
 
-type CornerGraphPoint = {
-  frontSlip: number;
-  rearSlip: number;
-  balance: number;
-  throttlePct: number;
-  brakePct: number;
-  steerPct: number;
-  tendency: BalanceTendency;
-};
-
-const TUNING_PHASES: TuningPhaseDefinition[] = [
-  { id: "entry", label: "Braking / corner entry" },
-  { id: "mid", label: "Turning / mid-corner" },
-  { id: "exit", label: "Exit / throttle application" }
+const INPUT_SERIES: TraceSeries[] = [
+  { label: "Steer", color: "#b68cff", value: (sample) => Math.abs(sample.steerPct), format: percentLabel, domain: PERCENT_DOMAIN },
+  { label: "Throttle", color: "#63da97", value: (sample) => sample.throttlePct, format: percentLabel, domain: PERCENT_DOMAIN },
+  { label: "Brake", color: "#f3d09b", value: (sample) => sample.brakePct, format: percentLabel, domain: PERCENT_DOMAIN }
 ];
 
-export function BehaviorPanel({ samples }: { samples: Telemetry[] }) {
-  const corners = React.useMemo(() => summarizeCornerBehavior(samples), [samples]);
+const RESPONSE_SERIES: TraceSeries[] = [
+  { label: "Speed", color: "#d7c7ad", value: (sample) => sample.speedKmh, format: kmhLabel, domain: "zero-max" },
+  { label: "Lateral G", color: "#9be7bd", value: (sample) => Math.abs(sample.AccelerationX / 9.81), format: gLabel, domain: LATERAL_G_DOMAIN },
+  { label: "Yaw rate", color: "#59a7ff", value: (sample) => Math.abs(radiansToDegrees(sample.AngularVelocityY)), format: degSecLabel, domain: "zero-max" }
+];
+
+const SLIP_ANGLE_SERIES: TraceSeries[] = [
+  { label: "Front slip angle", color: "#59a7ff", value: frontTireSlipAngle },
+  { label: "Rear slip angle", color: "#e46645", value: rearTireSlipAngle }
+];
+
+const COMBINED_SLIP_SERIES: TraceSeries[] = [
+  { label: "Front slip", color: "#86b7ff", value: (sample) => sample.frontSlip },
+  { label: "Rear slip", color: "#ff8a6d", value: (sample) => sample.rearSlip }
+];
+
+const ROLL_SERIES: TraceSeries[] = [
+  { label: "Left side", color: "#59a7ff", value: leftCompression, format: ratioLabel, domain: NORMALIZED_DOMAIN },
+  { label: "Right side", color: "#e46645", value: rightCompression, format: ratioLabel, domain: NORMALIZED_DOMAIN }
+];
+
+const FRONT_SUSPENSION_TRAVEL_SERIES: TraceSeries[] = [
+  { label: "FL travel", color: "#59a7ff", value: (sample) => sample.NormalizedSuspensionTravelFrontLeft, format: ratioLabel, domain: NORMALIZED_DOMAIN },
+  { label: "FR travel", color: "#a9ccff", value: (sample) => sample.NormalizedSuspensionTravelFrontRight, format: ratioLabel, domain: NORMALIZED_DOMAIN }
+];
+
+const REAR_SUSPENSION_TRAVEL_SERIES: TraceSeries[] = [
+  { label: "RL travel", color: "#ffb86c", value: (sample) => sample.NormalizedSuspensionTravelRearLeft, format: ratioLabel, domain: NORMALIZED_DOMAIN },
+  { label: "RR travel", color: "#e46645", value: (sample) => sample.NormalizedSuspensionTravelRearRight, format: ratioLabel, domain: NORMALIZED_DOMAIN }
+];
+
+const AXLE_SPLIT_SERIES: TraceSeries[] = [
+  { label: "Front R-L", color: "#86b7ff", value: frontRightMinusLeftTravel, format: signedRatioLabel, domain: "symmetric-zero" },
+  { label: "Rear R-L", color: "#ff8a6d", value: rearRightMinusLeftTravel, format: signedRatioLabel, domain: "symmetric-zero" }
+];
+
+export function CornerPanel({ samples }: { samples: Telemetry[] }) {
+  const corners = React.useMemo(() => summarizeCorners(samples), [samples]);
 
   return (
     <div className="h-full min-h-0 min-w-0 overflow-auto">
       {corners.length === 0 ? (
-        <div className="rounded-lg border border-white/[0.08] bg-[#171717] p-4 text-sm leading-5 text-[#b5bfb9]">
-          No cornering samples yet.
+        <div className="border-b border-white/[0.08] py-4 text-sm leading-5 text-[#b5bfb9]">
+          No cornering sections detected yet.
         </div>
       ) : (
-        <div className="grid min-h-0 grid-cols-[repeat(auto-fit,minmax(620px,1fr))] gap-3">
+        <div className="grid min-h-0 gap-7">
           {corners.map((corner) => (
-            <CornerBehaviorCard key={corner.id} corner={corner} />
+            <CornerCard key={corner.id} corner={corner} />
           ))}
         </div>
       )}
@@ -72,52 +88,95 @@ export function BehaviorPanel({ samples }: { samples: Telemetry[] }) {
   );
 }
 
-function CornerBehaviorCard({ corner }: { corner: CornerBehaviorSummary }) {
+export function BehaviorPanel(props: { samples: Telemetry[] }) {
+  return <CornerPanel {...props} />;
+}
+
+function CornerCard({ corner }: { corner: CornerSummary }) {
+  const [hoverProgress, setHoverProgress] = React.useState<number | null>(null);
+  const frontSlipAngleSeries = React.useMemo(() => frontSlipAngleUsageSeries(corner.effect), [corner.effect]);
+  const rearSlipAngleSeries = React.useMemo(() => rearSlipAngleUsageSeries(corner.effect), [corner.effect]);
+  const frontCombinedSlipSeries = React.useMemo(() => frontCombinedSlipUsageSeries(corner.effect), [corner.effect]);
+  const rearCombinedSlipSeries = React.useMemo(() => rearCombinedSlipUsageSeries(corner.effect), [corner.effect]);
+
   return (
-    <section className="grid min-w-0 content-start gap-3 rounded-lg border border-white/[0.08] bg-[#171717] p-3">
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 border-b border-white/[0.07] pb-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${corner.effect === "leftCorner" ? "bg-[#63da97]" : "bg-[#e46645]"}`} />
-          <strong className="text-sm leading-tight text-[#f5f7f6]">{corner.label}</strong>
-        </div>
-        <div className="flex items-center gap-3 text-right text-xs font-black tabular-nums text-[#f5f7f6]">
-          <span>{formatValue(corner.distanceMeters, { precision: 0 })} m</span>
-          <span>{formatValue(corner.avgSpeedKmh, { precision: 0 })} km/h</span>
+    <section className="grid min-w-0 content-start gap-3 border-b border-white/[0.08] pb-7 last:border-b-0 last:pb-0">
+      <div className="grid gap-2 border-b border-white/[0.07] pb-2">
+        <div className="min-w-0">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${corner.effect === "leftCorner" ? "bg-[#63da97]" : "bg-[#e46645]"}`} />
+            <strong className="text-base leading-tight text-[#f5f7f6]">{corner.label}</strong>
+            <CornerMetricStrip metrics={corner.metrics} />
+          </div>
         </div>
       </div>
 
-      <CornerOverviewGraphic corner={corner} />
-
-      <div className="grid gap-3 xl:grid-cols-3">
-        {corner.phases.map((phase) => (
-          <CornerPhaseGraph key={phase.id} phase={phase} />
-        ))}
+      <div className="grid gap-2">
+        <CornerOverviewGraphic corner={corner} hoverProgress={hoverProgress} />
+        <CornerGraphGroup title="Inputs / response">
+          <SectionTraceChart title="Inputs" samples={corner.samples} series={INPUT_SERIES} scale="shared" domain={PERCENT_DOMAIN} showPhases hoverProgress={hoverProgress} onHoverProgress={setHoverProgress} />
+          <SectionTraceChart title="Vehicle response" samples={corner.samples} series={RESPONSE_SERIES} showPhases hoverProgress={hoverProgress} onHoverProgress={setHoverProgress} />
+        </CornerGraphGroup>
+        <CornerGraphGroup title="Axle balance">
+          <SectionTraceChart title="Axle slip angle" samples={corner.samples} series={SLIP_ANGLE_SERIES} scale="shared" domain="zero-max" showPhases hoverProgress={hoverProgress} onHoverProgress={setHoverProgress} />
+          <SectionTraceChart title="Axle combined slip" samples={corner.samples} series={COMBINED_SLIP_SERIES} scale="shared" domain="zero-max" showPhases hoverProgress={hoverProgress} onHoverProgress={setHoverProgress} />
+        </CornerGraphGroup>
+        <CornerGraphGroup title="Tire usage">
+          <SectionTraceChart title="Front slip angle" samples={corner.samples} series={frontSlipAngleSeries} scale="shared" domain="zero-max" showPhases hoverProgress={hoverProgress} onHoverProgress={setHoverProgress} />
+          <SectionTraceChart title="Rear slip angle" samples={corner.samples} series={rearSlipAngleSeries} scale="shared" domain="zero-max" showPhases hoverProgress={hoverProgress} onHoverProgress={setHoverProgress} />
+          <SectionTraceChart title="Front combined slip" samples={corner.samples} series={frontCombinedSlipSeries} scale="shared" domain="zero-max" showPhases hoverProgress={hoverProgress} onHoverProgress={setHoverProgress} />
+          <SectionTraceChart title="Rear combined slip" samples={corner.samples} series={rearCombinedSlipSeries} scale="shared" domain="zero-max" showPhases hoverProgress={hoverProgress} onHoverProgress={setHoverProgress} />
+        </CornerGraphGroup>
+        <CornerGraphGroup title="Platform / roll">
+          <SectionTraceChart title="Front suspension travel" samples={corner.samples} series={FRONT_SUSPENSION_TRAVEL_SERIES} scale="shared" domain={NORMALIZED_DOMAIN} showPhases hoverProgress={hoverProgress} onHoverProgress={setHoverProgress} />
+          <SectionTraceChart title="Rear suspension travel" samples={corner.samples} series={REAR_SUSPENSION_TRAVEL_SERIES} scale="shared" domain={NORMALIZED_DOMAIN} showPhases hoverProgress={hoverProgress} onHoverProgress={setHoverProgress} />
+          <SectionTraceChart title="Side compression" samples={corner.samples} series={ROLL_SERIES} scale="shared" domain={NORMALIZED_DOMAIN} showPhases hoverProgress={hoverProgress} onHoverProgress={setHoverProgress} />
+          <SectionTraceChart title="Axle side split" samples={corner.samples} series={AXLE_SPLIT_SERIES} scale="shared" domain="symmetric-zero" showPhases hoverProgress={hoverProgress} onHoverProgress={setHoverProgress} />
+        </CornerGraphGroup>
       </div>
     </section>
   );
 }
 
-function CornerOverviewGraphic({ corner }: { corner: CornerBehaviorSummary }) {
+function CornerGraphGroup({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="grid min-w-0 gap-2">
+      <h3 className="text-[10px] font-black uppercase tracking-[0.16em] text-[#8e9994]">{title}</h3>
+      <div className="grid gap-2 xl:grid-cols-2 2xl:grid-cols-3">
+        {children}
+      </div>
+    </section>
+  );
+}
+
+function CornerMetricStrip({ metrics }: { metrics: SectionMetric[] }) {
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-black uppercase tracking-wide text-[#8e9994]">
+      {metrics.map((metric) => (
+        <span key={metric.label} className="inline-flex items-baseline gap-1.5">
+          <span>{metric.label}</span>
+          <span className="text-xs text-[#f5f7f6]">{metric.value}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function CornerOverviewGraphic({ corner, hoverProgress }: { corner: CornerSummary; hoverProgress: number | null }) {
   const pathData = svgPathData(corner.pathPoints);
   const phaseSegments = buildCornerGraphicPhaseSegments(corner.pathPoints);
   const entryPoint = corner.pathPoints[0] ?? { x: 54, y: 120 };
   const midPoint = pointAtPathProgress(corner.pathPoints, 0.5);
   const exitPoint = corner.pathPoints[corner.pathPoints.length - 1] ?? { x: 306, y: 120 };
   const direction = directionIndicator(corner.pathPoints);
-  const turnLabel = corner.effect === "leftCorner" ? "Left corner" : "Right corner";
-  const phaseMarkers: { id: TuningPhaseId; point: { x: number; y: number } }[] = [
-    { id: "entry", point: entryPoint },
-    { id: "mid", point: midPoint },
-    { id: "exit", point: exitPoint }
-  ];
+  const hoverPoint = hoverProgress === null ? null : pointAtPathProgress(corner.pathPoints, hoverProgress);
 
   return (
-    <section className="grid min-w-0 gap-3 rounded-md bg-white/[0.025] p-3 md:grid-cols-[minmax(0,1fr)_190px] md:items-center">
-      <svg className="h-44 w-full overflow-visible" viewBox="0 0 360 170" role="img" aria-label={`${corner.label} analyzed track corner with entry mid-corner and exit`}>
-        <rect x="8" y="12" width="344" height="146" rx="8" fill="rgba(245,247,246,0.025)" stroke="rgba(245,247,246,0.08)" />
-        <path d={pathData} fill="none" stroke="rgba(245,247,246,0.18)" strokeWidth="24" strokeLinecap="round" strokeLinejoin="round" />
+    <section className="grid min-w-0 gap-1.5 py-1">
+      <svg className="h-[150px] w-full overflow-visible" viewBox="0 0 360 160" role="img" aria-label={`${corner.label} track shape`}>
+        <rect x="8" y="12" width="344" height="136" rx="8" fill="rgba(245,247,246,0.025)" stroke="rgba(245,247,246,0.08)" />
+        <path d={pathData} fill="none" stroke="rgba(245,247,246,0.2)" strokeWidth="22" strokeLinecap="round" strokeLinejoin="round" />
         <path d={pathData} fill="none" stroke="rgba(245,247,246,0.55)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="10 12" />
-        <path d={pathData} fill="none" stroke={corner.effect === "leftCorner" ? "#63da97" : "#e46645"} strokeWidth="12" strokeLinecap="round" strokeLinejoin="round" opacity="0.2" />
         {phaseSegments.map((segment) => (
           <polyline
             key={segment.id}
@@ -130,40 +189,95 @@ function CornerOverviewGraphic({ corner }: { corner: CornerBehaviorSummary }) {
           />
         ))}
         <path d={direction.path} fill="none" stroke="#f5f7f6" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" opacity="0.9" />
-        {phaseMarkers.map((marker) => (
-          <g key={marker.id}>
-            <circle cx={marker.point.x} cy={marker.point.y} r="8" fill="#171717" stroke={phaseColor(marker.id)} strokeWidth="3" />
-            <circle cx={marker.point.x} cy={marker.point.y} r="3" fill={phaseColor(marker.id)} />
+        <PhaseMarker id="entry" point={entryPoint} />
+        <PhaseMarker id="mid" point={midPoint} />
+        <PhaseMarker id="exit" point={exitPoint} />
+        {hoverPoint ? (
+          <g>
+            <circle cx={hoverPoint.x} cy={hoverPoint.y} r="8" fill="#101312" stroke="#f5f7f6" strokeWidth="2.5" />
+            <circle cx={hoverPoint.x} cy={hoverPoint.y} r="3" fill="#f5f7f6" />
           </g>
-        ))}
-        <text x={labelX(entryPoint)} y={labelY(entryPoint)} textAnchor="middle" className="fill-[#9ba6a1] text-[10px] font-black uppercase tracking-wide">Entry</text>
-        <text x={labelX(midPoint)} y={labelY(midPoint, -12)} textAnchor="middle" className="fill-[#9ba6a1] text-[10px] font-black uppercase tracking-wide">Mid</text>
-        <text x={labelX(exitPoint)} y={labelY(exitPoint)} textAnchor="middle" className="fill-[#9ba6a1] text-[10px] font-black uppercase tracking-wide">Exit</text>
+        ) : null}
       </svg>
-
-      <div className="grid gap-3">
-        <div className="grid gap-1">
-          <span className="text-[10px] font-black uppercase tracking-wide text-[#9ba6a1]">Analyzed segment</span>
-          <strong className="text-sm leading-tight text-[#f5f7f6]">{turnLabel}</strong>
-        </div>
-        <div className="grid grid-cols-3 gap-2">
-          {corner.phases.map((phase) => (
-            <div key={phase.id} className="grid gap-1">
-              <span className="h-1.5 rounded-full" style={{ backgroundColor: phaseColor(phase.id) }} />
-              <span className="text-[10px] font-black uppercase leading-none tracking-wide text-[#9ba6a1]">{phase.label}</span>
-            </div>
-          ))}
-        </div>
+      <div className="grid grid-cols-3 gap-2">
+        {(["entry", "mid", "exit"] as TuningPhaseId[]).map((phase) => (
+          <div key={phase} className="grid gap-1">
+            <span className="h-1.5 rounded-full" style={{ backgroundColor: phaseColor(phase) }} />
+            <span className="text-[10px] font-black uppercase leading-none tracking-wide text-[#9ba6a1]">{phaseLabel(phase)}</span>
+          </div>
+        ))}
       </div>
     </section>
   );
 }
 
+function PhaseMarker({ id, point }: { id: TuningPhaseId; point: SvgPoint }) {
+  return (
+    <g>
+      <circle cx={point.x} cy={point.y} r="7" fill="#171717" stroke={phaseColor(id)} strokeWidth="3" />
+      <circle cx={point.x} cy={point.y} r="2.5" fill={phaseColor(id)} />
+    </g>
+  );
+}
+
+function summarizeCorners(samples: Telemetry[]): CornerSummary[] {
+  const path = buildPathFromTelemetry(samples);
+  const corners = buildCornerSegments(path);
+
+  return corners
+    .map((corner) => summarizeCorner(corner.id, corner.effect, corner.samples))
+    .filter((corner): corner is CornerSummary => Boolean(corner));
+}
+
+function summarizeCorner(id: number, effect: Exclude<CornerEffect, "straight">, samples: PathSample[]): CornerSummary | null {
+  if (samples.length < 3) return null;
+  const distanceMeters = pathDistanceMeters(samples);
+  if (distanceMeters <= 0) return null;
+  const telemetrySamples = samples.map((sample) => sample.telemetry).filter((sample): sample is Telemetry => Boolean(sample));
+  if (telemetrySamples.length === 0) return null;
+
+  const lateralGs = telemetrySamples.map((sample) => Math.abs(sample.AccelerationX / 9.81));
+  const leftCompressionValues = telemetrySamples.map(leftCompression);
+  const rightCompressionValues = telemetrySamples.map(rightCompression);
+  const frontRollValues = telemetrySamples.map(frontRoll);
+  const rearRollValues = telemetrySamples.map(rearRoll);
+  const frontCombinedSlip = telemetrySamples.map((sample) => sample.frontSlip);
+  const rearCombinedSlip = telemetrySamples.map((sample) => sample.rearSlip);
+  const outsideFrontSlipAngle = telemetrySamples.map((sample) => outsideFrontAngle(effect, sample));
+  const insideFrontSlipAngle = telemetrySamples.map((sample) => insideFrontAngle(effect, sample));
+  const outsideRearSlipAngle = telemetrySamples.map((sample) => outsideRearAngle(effect, sample));
+  const insideRearSlipAngle = telemetrySamples.map((sample) => insideRearAngle(effect, sample));
+  const slipBalance = average(telemetrySamples.map((sample) => sample.frontSlip - sample.rearSlip));
+  const sideCompressionBalance = average(rightCompressionValues.map((value, index) => value - (leftCompressionValues[index] ?? 0)));
+  const axleSplitBalance = average(frontRollValues.map((value, index) => value - (rearRollValues[index] ?? 0)));
+  const frontAngleSideDelta = average(outsideFrontSlipAngle.map((value, index) => value - (insideFrontSlipAngle[index] ?? 0)));
+  const rearAngleSideDelta = average(outsideRearSlipAngle.map((value, index) => value - (insideRearSlipAngle[index] ?? 0)));
+
+  return {
+    id,
+    label: `Corner ${String(id + 1).padStart(2, "0")} · ${effect === "leftCorner" ? "Left" : "Right"}`,
+    effect,
+    samples,
+    pathPoints: normalizeCornerPath(samples),
+    metrics: [
+      { label: "Distance", value: `${formatValue(distanceMeters)} m`, detail: `${formatValue(average(telemetrySamples.map((sample) => sample.speedKmh)))} km/h avg` },
+      { label: "Lateral G", value: `${formatValue(average(lateralGs), { precision: 2 })}g`, detail: `${formatValue(Math.max(...lateralGs), { precision: 2 })}g peak` },
+      { label: "Slip balance", value: signedValue(slipBalance), detail: "Front combined slip minus rear" },
+      { label: "Front O/I angle", value: signedValue(frontAngleSideDelta), detail: "Outside front minus inside front" },
+      { label: "Rear O/I angle", value: signedValue(rearAngleSideDelta), detail: "Outside rear minus inside rear" },
+      { label: "Side comp", value: signedValue(sideCompressionBalance), detail: "Right side minus left" },
+      { label: "Axle split", value: signedValue(axleSplitBalance), detail: "Front L/R split minus rear" },
+      { label: "Peak front slip", value: formatValue(Math.max(...frontCombinedSlip), { precision: 2 }), detail: "Combined slip" },
+      { label: "Peak rear slip", value: formatValue(Math.max(...rearCombinedSlip), { precision: 2 }), detail: "Combined slip" }
+    ]
+  };
+}
+
 function normalizeCornerPath(path: PathSample[]) {
   const width = 360;
-  const height = 170;
+  const height = 160;
   const paddingX = 32;
-  const paddingY = 26;
+  const paddingY = 24;
   const sourcePoints = downsamplePathSamples(path, 120).map((sample) => ({ x: sample.x, y: -sample.z }));
   if (sourcePoints.length === 0) return [];
 
@@ -185,22 +299,6 @@ function normalizeCornerPath(path: PathSample[]) {
   }));
 }
 
-function downsamplePathSamples(path: PathSample[], maxPoints: number) {
-  if (path.length <= maxPoints) return path;
-
-  const result: PathSample[] = [];
-  const step = (path.length - 1) / (maxPoints - 1);
-  for (let index = 0; index < maxPoints; index += 1) {
-    result.push(path[Math.round(index * step)]);
-  }
-  return result;
-}
-
-function svgPathData(points: SvgPoint[]) {
-  if (points.length === 0) return "";
-  return points.map((point, index) => `${index === 0 ? "M" : "L"}${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(" ");
-}
-
 function buildCornerGraphicPhaseSegments(points: SvgPoint[]): { id: TuningPhaseId; points: SvgPoint[] }[] {
   const segments: { id: TuningPhaseId; points: SvgPoint[] }[] = [];
   if (points.length < 2) return segments;
@@ -210,7 +308,7 @@ function buildCornerGraphicPhaseSegments(points: SvgPoint[]): { id: TuningPhaseI
   if (totalDistance <= 0) return [{ id: "mid", points }];
 
   for (let index = 1; index < points.length; index += 1) {
-    const phaseId = phaseAtCornerProgress((distances[index] ?? 0) / totalDistance);
+    const phaseId = phaseAtProgress((distances[index] ?? 0) / totalDistance);
     const previousPoint = points[index - 1];
     const point = points[index];
     const current = segments[segments.length - 1];
@@ -226,7 +324,7 @@ function buildCornerGraphicPhaseSegments(points: SvgPoint[]): { id: TuningPhaseI
 }
 
 function pointAtPathProgress(points: SvgPoint[], progress: number) {
-  if (points.length === 0) return { x: 180, y: 85 };
+  if (points.length === 0) return { x: 180, y: 80 };
   if (points.length === 1) return points[0];
 
   const distances = cumulativePointDistances(points);
@@ -265,6 +363,17 @@ function directionIndicator(points: SvgPoint[]) {
   };
 }
 
+function downsamplePathSamples(path: PathSample[], maxPoints: number) {
+  if (path.length <= maxPoints) return path;
+
+  const result: PathSample[] = [];
+  const step = (path.length - 1) / (maxPoints - 1);
+  for (let index = 0; index < maxPoints; index += 1) {
+    result.push(path[Math.round(index * step)]);
+  }
+  return result;
+}
+
 function cumulativePointDistances(points: SvgPoint[]) {
   const distances = new Array<number>(points.length).fill(0);
   for (let index = 1; index < points.length; index += 1) {
@@ -273,180 +382,15 @@ function cumulativePointDistances(points: SvgPoint[]) {
   return distances;
 }
 
-function labelX(point: SvgPoint) {
-  return clampNumber(point.x, 34, 326);
+function svgPathData(points: SvgPoint[]) {
+  if (points.length === 0) return "";
+  return points.map((point, index) => `${index === 0 ? "M" : "L"}${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(" ");
 }
 
-function labelY(point: SvgPoint, offset = 24) {
-  return clampNumber(point.y + offset, 24, 150);
-}
-
-function CornerPhaseGraph({ phase }: { phase: CornerPhaseSummary }) {
-  const tendency = tendencyCopy(phase.tendency);
-
-  return (
-    <section className="grid min-w-0 content-start gap-3 rounded-md bg-white/[0.025] p-3">
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: phaseColor(phase.id) }} />
-          <strong className="text-xs leading-tight text-[#f5f7f6]">{phase.label}</strong>
-        </div>
-        <div className="text-right">
-          <strong className={`block text-xs tabular-nums ${metricToneClass(tendency.tone)}`}>{tendency.label}</strong>
-          <span className="text-[10px] tabular-nums text-[#9ba6a1]">{formatValue(phase.percent, { precision: 0 })}%</span>
-        </div>
-      </div>
-
-      <SlipBalanceChart phase={phase} />
-
-      <div className="grid grid-cols-3 gap-2">
-        <BalanceShare label="Under" value={phase.understeerPercent} color="#f3d09b" />
-        <BalanceShare label="Neutral" value={phase.neutralPercent} color="#9ba6a1" />
-        <BalanceShare label="Over" value={phase.oversteerPercent} color="#e46645" />
-      </div>
-    </section>
-  );
-}
-
-function SlipBalanceChart({ phase }: { phase: CornerPhaseSummary }) {
-  const width = 360;
-  const height = 170;
-  const chartTop = 12;
-  const slipChartBottom = 88;
-  const inputChartTop = 104;
-  const inputChartBottom = 140;
-  const slipChartHeight = slipChartBottom - chartTop;
-  const inputChartHeight = inputChartBottom - inputChartTop;
-  const points = phase.points.length > 1
-    ? phase.points
-    : [{ frontSlip: 0, rearSlip: 0, balance: phase.balanceScore, throttlePct: 0, brakePct: 0, steerPct: 0, tendency: phase.tendency }];
-  const maxSlip = Math.max(0.2, ...points.flatMap((point) => [point.frontSlip, point.rearSlip]));
-  const frontPolyline = points.map((point, index) => {
-    const x = points.length <= 1 ? width / 2 : (index / (points.length - 1)) * width;
-    const y = slipToChartY(point.frontSlip, maxSlip, chartTop, slipChartHeight);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(" ");
-  const rearPolyline = points.map((point, index) => {
-    const x = points.length <= 1 ? width / 2 : (index / (points.length - 1)) * width;
-    const y = slipToChartY(point.rearSlip, maxSlip, chartTop, slipChartHeight);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(" ");
-  const balancePolyline = points.map((point, index) => {
-    const x = points.length <= 1 ? width / 2 : (index / (points.length - 1)) * width;
-    const y = balanceToChartY(point.balance, chartTop, slipChartHeight);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(" ");
-  const throttlePolyline = points.map((point, index) => {
-    const x = points.length <= 1 ? width / 2 : (index / (points.length - 1)) * width;
-    const y = percentToChartY(point.throttlePct, inputChartTop, inputChartHeight);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(" ");
-  const brakePolyline = points.map((point, index) => {
-    const x = points.length <= 1 ? width / 2 : (index / (points.length - 1)) * width;
-    const y = percentToChartY(point.brakePct, inputChartTop, inputChartHeight);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(" ");
-  const steerPolyline = points.map((point, index) => {
-    const x = points.length <= 1 ? width / 2 : (index / (points.length - 1)) * width;
-    const y = signedPercentToChartY(point.steerPct, inputChartTop, inputChartHeight);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(" ");
-  const averageY = balanceToChartY(phase.balanceScore, chartTop, slipChartHeight);
-
-  return (
-    <div className="grid gap-2">
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-2">
-        <span className="text-[10px] font-black uppercase tracking-[0.08em] text-[#9ba6a1]">Slip / balance / inputs</span>
-        <span className="text-xs font-black tabular-nums text-[#f5f7f6]">{formatSignedValue(phase.balanceScore, 2)}</span>
-      </div>
-      <svg className="h-44 w-full overflow-visible" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${phase.label} front rear slip balance throttle brake and steering trend`}>
-        <rect x="0" y={chartTop} width={width} height={slipChartHeight / 2} fill="#e46645" opacity="0.13" />
-        <rect x="0" y={chartTop + slipChartHeight / 2} width={width} height={slipChartHeight / 2} fill="#f3d09b" opacity="0.13" />
-        <rect x="0" y={inputChartTop} width={width} height={inputChartHeight} fill="rgba(245,247,246,0.035)" />
-        {points.map((point, index) => {
-          const x = (index / points.length) * width;
-          const stripeWidth = Math.max(1, width / points.length);
-          return (
-            <rect
-              key={`${index}-${point.tendency}`}
-              x={x}
-              y={inputChartBottom + 7}
-              width={stripeWidth}
-              height="8"
-              fill={balanceColor(point.tendency)}
-              opacity="0.8"
-            />
-          );
-        })}
-        <line x1="0" y1={balanceToChartY(0, chartTop, slipChartHeight)} x2={width} y2={balanceToChartY(0, chartTop, slipChartHeight)} stroke="rgba(245,247,246,0.32)" strokeWidth="1" strokeDasharray="4 4" />
-        <line x1="0" y1={averageY} x2={width} y2={averageY} stroke="#f5f7f6" strokeWidth="1.5" opacity="0.8" />
-        <line x1="0" y1={inputChartTop + inputChartHeight / 2} x2={width} y2={inputChartTop + inputChartHeight / 2} stroke="rgba(245,247,246,0.18)" strokeWidth="1" strokeDasharray="3 5" />
-        <polyline points={frontPolyline} fill="none" stroke="#59a7ff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-        <polyline points={rearPolyline} fill="none" stroke="#e46645" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-        <polyline points={balancePolyline} fill="none" stroke="#f5f7f6" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.9" vectorEffect="non-scaling-stroke" />
-        <polyline points={throttlePolyline} fill="none" stroke="#63da97" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-        <polyline points={brakePolyline} fill="none" stroke="#f3d09b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-        <polyline points={steerPolyline} fill="none" stroke="#b68cff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-        <text x="0" y="11" className="fill-[#e46645] text-[10px] font-black uppercase tracking-wide">Oversteer</text>
-        <text x={width / 2} y={balanceToChartY(0, chartTop, slipChartHeight) - 5} textAnchor="middle" className="fill-[#9ba6a1] text-[10px] font-black uppercase tracking-wide">Neutral</text>
-        <text x="0" y={inputChartTop - 16} className="fill-[#f3d09b] text-[10px] font-black uppercase tracking-wide">Understeer</text>
-        <g transform={`translate(96 ${inputChartTop - 8})`}>
-          <LegendItem x={0} color="#59a7ff" label="Front slip" />
-          <LegendItem x={110} color="#e46645" label="Rear slip" />
-        </g>
-        <text x="0" y={inputChartTop - 4} className="fill-[#9ba6a1] text-[9px] font-black uppercase tracking-wide">Inputs</text>
-        <g transform={`translate(0 ${inputChartBottom + 27})`}>
-          <LegendItem x={0} color="#f5f7f6" label="Balance" />
-          <LegendItem x={88} color="#63da97" label="Throttle" />
-        </g>
-      </svg>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px] font-black uppercase tracking-wide text-[#9ba6a1]">
-        <LegendText color="#f3d09b" label="Brake" />
-        <LegendText color="#b68cff" label="Steer" />
-      </div>
-    </div>
-  );
-}
-
-function LegendItem({ x, color, label }: { x: number; color: string; label: string }) {
-  return (
-    <>
-      <line x1={x} y1="0" x2={x + 18} y2="0" stroke={color} strokeWidth="3" strokeLinecap="round" />
-      <text x={x + 24} y="3" className="fill-[#9ba6a1] text-[10px] font-black uppercase tracking-wide">{label}</text>
-    </>
-  );
-}
-
-function balanceToChartY(score: number, top: number, height: number) {
-  return top + (0.5 - clampNumber(score, -1, 1) * 0.5) * height;
-}
-
-function slipToChartY(slip: number, maxSlip: number, top: number, height: number) {
-  return top + (1 - clampNumber(slip / maxSlip, 0, 1)) * height;
-}
-
-function percentToChartY(percent: number, top: number, height: number) {
-  return top + (1 - clampNumber(percent, 0, 100) / 100) * height;
-}
-
-function signedPercentToChartY(percent: number, top: number, height: number) {
-  return top + (0.5 - clampNumber(percent, -100, 100) / 200) * height;
-}
-
-function balanceColor(tendency: BalanceTendency) {
-  if (tendency === "understeer") return "#f3d09b";
-  if (tendency === "oversteer") return "#e46645";
-  if (tendency === "neutral") return "#9bd9a9";
-  return "#9ba6a1";
-}
-
-function LegendText({ color, label }: { color: string; label: string }) {
-  return (
-    <span className="inline-flex items-center gap-1.5">
-      <span className="h-1.5 w-4 rounded-full" style={{ backgroundColor: color }} />
-      {label}
-    </span>
-  );
+function phaseAtProgress(progress: number): TuningPhaseId {
+  if (progress < 0.34) return "entry";
+  if (progress < 0.67) return "mid";
+  return "exit";
 }
 
 function phaseColor(phase: TuningPhaseId) {
@@ -455,204 +399,137 @@ function phaseColor(phase: TuningPhaseId) {
   return "#63da97";
 }
 
-function BalanceShare({ label, value, color }: { label: string; value: number; color: string }) {
-  return (
-    <div className="grid gap-1">
-      <div className="grid gap-0.5">
-        <span className="text-[9px] font-black uppercase leading-none tracking-wide text-[#9ba6a1]">{label}</span>
-        <span className="text-xs font-black leading-none tabular-nums text-[#f5f7f6]">{formatValue(value, { precision: 0 })}%</span>
-      </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
-        <div className="h-full rounded-full" style={{ width: `${clampNumber(value, 0, 100)}%`, backgroundColor: color }} />
-      </div>
-    </div>
-  );
-}
-
-function summarizeCornerBehavior(samples: Telemetry[]): CornerBehaviorSummary[] {
-  const path = buildPathFromTelemetry(samples);
-  const corners = buildCornerSegments(path);
-
-  return corners
-    .map((corner) => summarizeCorner(corner.id, corner.effect, corner.samples))
-    .filter((corner): corner is CornerBehaviorSummary => Boolean(corner));
-}
-
-function summarizeCorner(id: number, effect: Exclude<CornerEffect, "straight">, pathSamples: PathSample[]): CornerBehaviorSummary | null {
-  if (pathSamples.length < 3) return null;
-
-  const distances = cumulativePathDistances(pathSamples);
-  const totalDistance = distances[distances.length - 1] ?? 0;
-  if (totalDistance <= 0) return null;
-
-  const phaseBuckets = new Map<TuningPhaseId, CornerPhaseBucket>();
-  for (const phase of TUNING_PHASES) {
-    phaseBuckets.set(phase.id, emptyCornerPhaseBucket());
-  }
-
-  let speedKmhTotal = 0;
-  let speedCount = 0;
-
-  for (let index = 0; index < pathSamples.length; index += 1) {
-    const sample = pathSamples[index]?.telemetry;
-    if (!sample || sample.IsRaceOn !== 1) continue;
-
-    const progress = (distances[index] ?? 0) / totalDistance;
-    const phaseId = phaseAtCornerProgress(progress);
-    const bucket = phaseBuckets.get(phaseId);
-    if (!bucket) continue;
-
-    const frontSlip = average([Math.abs(sample.TireCombinedSlipFrontLeft), Math.abs(sample.TireCombinedSlipFrontRight)]);
-    const rearSlip = average([Math.abs(sample.TireCombinedSlipRearLeft), Math.abs(sample.TireCombinedSlipRearRight)]);
-    const balance = balanceScore(frontTireSlipAngle(sample), rearTireSlipAngle(sample), frontSlip, rearSlip);
-    const tendency = sampleTendency(balance);
-
-    bucket.points.push({
-      frontSlip,
-      rearSlip,
-      balance,
-      throttlePct: sample.throttlePct,
-      brakePct: sample.brakePct,
-      steerPct: sample.steerPct,
-      tendency
-    });
-    bucket.balanceTotal += balance;
-    bucket.understeerSamples += tendency === "understeer" ? 1 : 0;
-    bucket.oversteerSamples += tendency === "oversteer" ? 1 : 0;
-    bucket.neutralSamples += tendency === "neutral" ? 1 : 0;
-    speedKmhTotal += sample.speedKmh;
-    speedCount += 1;
-  }
-
-  return {
-    id,
-    label: `Corner ${String(id + 1).padStart(2, "0")} · ${effect === "leftCorner" ? "Left" : "Right"}`,
-    effect,
-    distanceMeters: totalDistance,
-    avgSpeedKmh: speedCount > 0 ? speedKmhTotal / speedCount : 0,
-    pathPoints: normalizeCornerPath(pathSamples),
-    phases: TUNING_PHASES.map((phase) => summarizeCornerPhase(phase, phaseBuckets.get(phase.id), pathSamples.length))
-  };
-}
-
-type CornerPhaseBucket = {
-  points: CornerGraphPoint[];
-  balanceTotal: number;
-  understeerSamples: number;
-  oversteerSamples: number;
-  neutralSamples: number;
-};
-
-function emptyCornerPhaseBucket(): CornerPhaseBucket {
-  return {
-    points: [],
-    balanceTotal: 0,
-    understeerSamples: 0,
-    oversteerSamples: 0,
-    neutralSamples: 0
-  };
-}
-
-function summarizeCornerPhase(
-  definition: TuningPhaseDefinition,
-  bucket: CornerPhaseBucket | undefined,
-  totalCornerSamples: number
-): CornerPhaseSummary {
-  const points = bucket?.points ?? [];
-  const sampleCount = points.length;
-  const balance = sampleCount > 0 ? (bucket?.balanceTotal ?? 0) / sampleCount : 0;
-  const understeerPercent = percentOf(bucket?.understeerSamples ?? 0, sampleCount);
-  const oversteerPercent = percentOf(bucket?.oversteerSamples ?? 0, sampleCount);
-  const neutralPercent = percentOf(bucket?.neutralSamples ?? 0, sampleCount);
-
-  return {
-    id: definition.id,
-    label: shortPhaseLabel(definition.id),
-    tendency: phaseTendency(balance, understeerPercent, oversteerPercent, sampleCount),
-    balanceScore: balance,
-    percent: percentOf(sampleCount, totalCornerSamples),
-    points: downsampleCornerGraphPoints(points, 90),
-    understeerPercent,
-    oversteerPercent,
-    neutralPercent
-  };
-}
-
-function cumulativePathDistances(path: PathSample[]) {
-  const distances = new Array<number>(path.length).fill(0);
-  for (let index = 1; index < path.length; index += 1) {
-    distances[index] = distances[index - 1] + Math.hypot(path[index].x - path[index - 1].x, path[index].z - path[index - 1].z);
-  }
-  return distances;
-}
-
-function phaseAtCornerProgress(progress: number): TuningPhaseId {
-  if (progress < 0.34) return "entry";
-  if (progress < 0.67) return "mid";
-  return "exit";
-}
-
-function shortPhaseLabel(phase: TuningPhaseId) {
+function phaseLabel(phase: TuningPhaseId) {
   if (phase === "entry") return "Entry";
-  if (phase === "mid") return "Mid-corner";
+  if (phase === "mid") return "Mid";
   return "Exit";
 }
 
-function downsampleCornerGraphPoints(points: CornerGraphPoint[], maxPoints: number) {
-  if (points.length <= maxPoints) return points;
-
-  const result: CornerGraphPoint[] = [];
-  const bucketSize = points.length / maxPoints;
-
-  for (let bucketIndex = 0; bucketIndex < maxPoints; bucketIndex += 1) {
-    const start = Math.floor(bucketIndex * bucketSize);
-    const end = Math.max(start + 1, Math.floor((bucketIndex + 1) * bucketSize));
-    const bucket = points.slice(start, end);
-    const frontSlip = average(bucket.map((point) => point.frontSlip));
-    const rearSlip = average(bucket.map((point) => point.rearSlip));
-    const balance = average(bucket.map((point) => point.balance));
-    const throttlePct = average(bucket.map((point) => point.throttlePct));
-    const brakePct = average(bucket.map((point) => point.brakePct));
-    const steerPct = average(bucket.map((point) => point.steerPct));
-    result.push({ frontSlip, rearSlip, balance, throttlePct, brakePct, steerPct, tendency: sampleTendency(balance) });
-  }
-
-  return result;
+function frontRoll(sample: Telemetry) {
+  return Math.abs(sample.NormalizedSuspensionTravelFrontLeft - sample.NormalizedSuspensionTravelFrontRight);
 }
 
-function balanceScore(frontAngle: number, rearAngle: number, frontSlip: number, rearSlip: number) {
-  const angleBalance = rearAngle - frontAngle;
-  const slipBalance = (rearSlip - frontSlip) * 0.35;
-  return clampNumber(angleBalance + slipBalance, -2.5, 2.5);
+function rearRoll(sample: Telemetry) {
+  return Math.abs(sample.NormalizedSuspensionTravelRearLeft - sample.NormalizedSuspensionTravelRearRight);
 }
 
-function sampleTendency(score: number): Exclude<BalanceTendency, "unknown"> {
-  if (score < -0.18) return "understeer";
-  if (score > 0.18) return "oversteer";
-  return "neutral";
+function frontRightMinusLeftTravel(sample: Telemetry) {
+  return sample.NormalizedSuspensionTravelFrontRight - sample.NormalizedSuspensionTravelFrontLeft;
 }
 
-function phaseTendency(score: number, understeerPercent: number, oversteerPercent: number, milliseconds: number): BalanceTendency {
-  if (milliseconds <= 0) return "unknown";
-  if (score < -0.14) return "understeer";
-  if (score > 0.14) return "oversteer";
-  if (understeerPercent > oversteerPercent + 18) return "understeer";
-  if (oversteerPercent > understeerPercent + 18) return "oversteer";
-  return "neutral";
+function rearRightMinusLeftTravel(sample: Telemetry) {
+  return sample.NormalizedSuspensionTravelRearRight - sample.NormalizedSuspensionTravelRearLeft;
 }
 
-function tendencyCopy(tendency: BalanceTendency): { label: string; tone: "default" | "ok" | "warn" | "alert" } {
-  if (tendency === "understeer") return { label: "Understeer", tone: "warn" };
-  if (tendency === "oversteer") return { label: "Oversteer", tone: "alert" };
-  if (tendency === "neutral") return { label: "Neutral", tone: "ok" };
-  return { label: "No data", tone: "default" };
+function leftCompression(sample: Telemetry) {
+  return average([
+    sample.NormalizedSuspensionTravelFrontLeft,
+    sample.NormalizedSuspensionTravelRearLeft
+  ]);
 }
 
-function percentOf(value: number, total: number) {
-  return total > 0 ? (value / total) * 100 : 0;
+function rightCompression(sample: Telemetry) {
+  return average([
+    sample.NormalizedSuspensionTravelFrontRight,
+    sample.NormalizedSuspensionTravelRearRight
+  ]);
 }
 
-function formatSignedValue(value: number, precision: number) {
+function frontSlipAngleUsageSeries(effect: Exclude<CornerEffect, "straight">): TraceSeries[] {
+  return [
+    { label: outsideLabel(effect, "front"), color: "#59a7ff", value: (sample) => outsideFrontAngle(effect, sample), format: ratioLabel },
+    { label: insideLabel(effect, "front"), color: "#a9ccff", value: (sample) => insideFrontAngle(effect, sample), format: ratioLabel }
+  ];
+}
+
+function rearSlipAngleUsageSeries(effect: Exclude<CornerEffect, "straight">): TraceSeries[] {
+  return [
+    { label: outsideLabel(effect, "rear"), color: "#e46645", value: (sample) => outsideRearAngle(effect, sample), format: ratioLabel },
+    { label: insideLabel(effect, "rear"), color: "#ffb09d", value: (sample) => insideRearAngle(effect, sample), format: ratioLabel }
+  ];
+}
+
+function frontCombinedSlipUsageSeries(effect: Exclude<CornerEffect, "straight">): TraceSeries[] {
+  return [
+    { label: outsideLabel(effect, "front"), color: "#59a7ff", value: (sample) => outsideFrontCombinedSlip(effect, sample), format: ratioLabel },
+    { label: insideLabel(effect, "front"), color: "#a9ccff", value: (sample) => insideFrontCombinedSlip(effect, sample), format: ratioLabel }
+  ];
+}
+
+function rearCombinedSlipUsageSeries(effect: Exclude<CornerEffect, "straight">): TraceSeries[] {
+  return [
+    { label: outsideLabel(effect, "rear"), color: "#e46645", value: (sample) => outsideRearCombinedSlip(effect, sample), format: ratioLabel },
+    { label: insideLabel(effect, "rear"), color: "#ffb09d", value: (sample) => insideRearCombinedSlip(effect, sample), format: ratioLabel }
+  ];
+}
+
+function outsideFrontAngle(effect: Exclude<CornerEffect, "straight">, sample: Telemetry) {
+  return Math.abs(effect === "leftCorner" ? sample.TireSlipAngleFrontRight : sample.TireSlipAngleFrontLeft);
+}
+
+function insideFrontAngle(effect: Exclude<CornerEffect, "straight">, sample: Telemetry) {
+  return Math.abs(effect === "leftCorner" ? sample.TireSlipAngleFrontLeft : sample.TireSlipAngleFrontRight);
+}
+
+function outsideRearAngle(effect: Exclude<CornerEffect, "straight">, sample: Telemetry) {
+  return Math.abs(effect === "leftCorner" ? sample.TireSlipAngleRearRight : sample.TireSlipAngleRearLeft);
+}
+
+function insideRearAngle(effect: Exclude<CornerEffect, "straight">, sample: Telemetry) {
+  return Math.abs(effect === "leftCorner" ? sample.TireSlipAngleRearLeft : sample.TireSlipAngleRearRight);
+}
+
+function outsideFrontCombinedSlip(effect: Exclude<CornerEffect, "straight">, sample: Telemetry) {
+  return Math.abs(effect === "leftCorner" ? sample.TireCombinedSlipFrontRight : sample.TireCombinedSlipFrontLeft);
+}
+
+function insideFrontCombinedSlip(effect: Exclude<CornerEffect, "straight">, sample: Telemetry) {
+  return Math.abs(effect === "leftCorner" ? sample.TireCombinedSlipFrontLeft : sample.TireCombinedSlipFrontRight);
+}
+
+function outsideRearCombinedSlip(effect: Exclude<CornerEffect, "straight">, sample: Telemetry) {
+  return Math.abs(effect === "leftCorner" ? sample.TireCombinedSlipRearRight : sample.TireCombinedSlipRearLeft);
+}
+
+function insideRearCombinedSlip(effect: Exclude<CornerEffect, "straight">, sample: Telemetry) {
+  return Math.abs(effect === "leftCorner" ? sample.TireCombinedSlipRearLeft : sample.TireCombinedSlipRearRight);
+}
+
+function outsideLabel(effect: Exclude<CornerEffect, "straight">, axle: "front" | "rear") {
+  const side = effect === "leftCorner" ? "R" : "L";
+  return `Outside ${side}${axle === "front" ? "F" : "R"}`;
+}
+
+function insideLabel(effect: Exclude<CornerEffect, "straight">, axle: "front" | "rear") {
+  const side = effect === "leftCorner" ? "L" : "R";
+  return `Inside ${side}${axle === "front" ? "F" : "R"}`;
+}
+
+function percentLabel(value: number) {
+  return `${formatValue(value)}%`;
+}
+
+function kmhLabel(value: number) {
+  return `${formatValue(value)} km/h`;
+}
+
+function gLabel(value: number) {
+  return `${formatValue(value, { precision: 2 })}g`;
+}
+
+function degSecLabel(value: number) {
+  return `${formatValue(value, { precision: 0 })} deg/s`;
+}
+
+function ratioLabel(value: number) {
+  return formatValue(value, { precision: 2 });
+}
+
+function signedRatioLabel(value: number) {
+  return signedValue(value);
+}
+
+function signedValue(value: number) {
   const prefix = value > 0 ? "+" : "";
-  return `${prefix}${formatValue(value, { precision })}`;
+  return `${prefix}${formatValue(value, { precision: 2 })}`;
 }

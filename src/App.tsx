@@ -1,12 +1,12 @@
 import * as React from "react";
-import { BarChart3, CheckCircle2, Gamepad2, Gauge, LineChart, MonitorDot, Radio, Settings2, Wifi } from "lucide-react";
+import { CheckCircle2, Gamepad2, Gauge, Milestone, MonitorDot, Radio, Route, Settings2, Wifi } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { LiveInputsPanel } from "@/features/inputs/LiveInputsPanel";
 import { TrackMapPanel } from "@/features/map/TrackMapPanel";
 import { TelemetrySidePanel } from "@/features/dashboard/telemetryVisuals";
-import { BehaviorPanel } from "@/features/dashboard/TuningBehaviorPanel";
-import { PowertrainAnalysisPanel } from "@/features/analysis/PowertrainAnalysisPanel";
+import { CornerPanel } from "@/features/dashboard/TuningBehaviorPanel";
+import { StraightsPanel } from "@/features/analysis/StraightsPanel";
 import { CarCatalogPage } from "@/features/cars/CarCatalogPage";
 import { RunSidebar } from "@/features/runs/RunSidebar";
 import { useLiveTelemetry } from "@/hooks/useLiveTelemetry";
@@ -200,13 +200,13 @@ export function App() {
                     <Gauge size={16} />
                     Car
                   </TabsTrigger>
-                  <TabsTrigger value="behavior" className="gap-2 px-3">
-                    <BarChart3 size={16} />
-                    Behaviour
+                  <TabsTrigger value="corner" className="gap-2 px-3">
+                    <Route size={16} />
+                    Corner
                   </TabsTrigger>
-                  <TabsTrigger value="analysis" className="gap-2 px-3">
-                    <LineChart size={16} />
-                    Analysis
+                  <TabsTrigger value="straights" className="gap-2 px-3">
+                    <Milestone size={16} />
+                    Straights
                   </TabsTrigger>
                 </TabsList>
               </div>
@@ -217,6 +217,7 @@ export function App() {
                     <TrackMapPanel
                       path={displayPath}
                       hoverIndex={hoverIndex}
+                      hoverTelemetry={hoverSample}
                       playheadPathIndex={playback.playheadPathIndex}
                       playheadTelemetry={playheadSample}
                       isPlaying={playback.isPlaying}
@@ -258,19 +259,15 @@ export function App() {
                 </section>
               </TabsContent>
 
-              <TabsContent value="behavior" className="m-0 min-h-0 min-w-0 flex-1">
+              <TabsContent value="corner" className="m-0 min-h-0 min-w-0 flex-1">
                 <section className="h-full min-h-0 p-4">
-                  <BehaviorPanel samples={displaySamples} />
+                  <CornerPanel samples={displaySamples} />
                 </section>
               </TabsContent>
 
-              <TabsContent value="analysis" className="m-0 min-h-0 min-w-0 flex-1">
+              <TabsContent value="straights" className="m-0 min-h-0 min-w-0 flex-1">
                 <section className="h-full min-h-0 p-4">
-                  <PowertrainAnalysisPanel
-                    samples={displaySamples}
-                    telemetry={telemetry}
-                    powerBand={selectedRunId === "live" ? null : runDetail?.powerBand ?? null}
-                  />
+                  <StraightsPanel samples={displaySamples} />
                 </section>
               </TabsContent>
             </Tabs>
