@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { drivetrainLabel, shortRunId } from "@/lib/format";
-import type { CarCatalogItem, RunDateGroup, RunSelection, RunSummary, Telemetry } from "@/types/telemetry";
+import type { CarCatalogItem, CarSessionSummary, RunSelection, RunSummary, Telemetry } from "@/types/telemetry";
 
 function formatRunTime(value: number | null | undefined) {
   if (!value) return "No packets";
@@ -13,22 +13,6 @@ function formatRunTime(value: number | null | undefined) {
     day: "numeric",
     hour: "numeric",
     minute: "2-digit"
-  });
-}
-
-function formatDateGroup(value: number) {
-  const date = new Date(value);
-  const today = new Date();
-  const yesterday = new Date();
-  yesterday.setDate(today.getDate() - 1);
-
-  if (date.toDateString() === today.toDateString()) return "Today";
-  if (date.toDateString() === yesterday.toDateString()) return "Yesterday";
-  return date.toLocaleDateString([], {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    year: date.getFullYear() === today.getFullYear() ? undefined : "numeric"
   });
 }
 
@@ -81,10 +65,13 @@ function splitReasonLabel(reason: string | null | undefined) {
 }
 
 export function RunSidebar({
-  runGroups,
+  carSessions,
   carCatalogByOrdinal,
   activePage,
   selectedRunId,
+  selectedCarSessionId,
+  enabledRunIds,
+  hasCustomRunFilter,
   canSelectLive,
   liveRunId,
   liveTelemetry,
@@ -101,13 +88,18 @@ export function RunSidebar({
   isCollapsed,
   onCollapsedChange,
   onPageChange,
+  onCarSessionChange,
   onRunChange,
+  onRunToggle,
   onToggleUdpListening
 }: {
-  runGroups: RunDateGroup[];
+  carSessions: CarSessionSummary[];
   carCatalogByOrdinal: Map<number, CarCatalogItem>;
   activePage: "runs" | "cars";
   selectedRunId: RunSelection;
+  selectedCarSessionId: string | null;
+  enabledRunIds: Set<string>;
+  hasCustomRunFilter: boolean;
   canSelectLive: boolean;
   liveRunId?: string;
   liveTelemetry?: Telemetry | null;
@@ -124,13 +116,15 @@ export function RunSidebar({
   isCollapsed: boolean;
   onCollapsedChange: (isCollapsed: boolean) => void;
   onPageChange: (page: "runs" | "cars") => void;
+  onCarSessionChange: (groupKey: string) => void;
   onRunChange: (runId: RunSelection) => void;
+  onRunToggle: (runId: string) => void;
   onToggleUdpListening: () => void;
 }) {
   const selectedValue = canSelectLive
     ? selectedRunId
     : selectedRunId === "live"
-      ? runGroups[0]?.runs[0]?.id ?? "__none"
+      ? carSessions[0]?.runs[0]?.id ?? "__none"
       : selectedRunId;
 
   function selectRun(runId: RunSelection | "__none") {
@@ -167,15 +161,21 @@ export function RunSidebar({
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
         {isCollapsed ? (
           <CollapsedRuns
-            runGroups={runGroups}
+            carSessions={carSessions}
             selectedValue={selectedValue}
+            selectedCarSessionId={selectedCarSessionId}
             canSelectLive={canSelectLive}
+            carCatalogByOrdinal={carCatalogByOrdinal}
+            onCarSessionChange={onCarSessionChange}
             onRunChange={selectRun}
           />
         ) : (
           <ExpandedRuns
-            runGroups={runGroups}
+            carSessions={carSessions}
             selectedValue={selectedValue}
+            selectedCarSessionId={selectedCarSessionId}
+            enabledRunIds={enabledRunIds}
+            hasCustomRunFilter={hasCustomRunFilter}
             canSelectLive={canSelectLive}
             liveRunId={liveRunId}
             liveTelemetry={liveTelemetry}
@@ -183,7 +183,9 @@ export function RunSidebar({
             liveBadPackets={liveBadPackets}
             liveLastPacketAt={liveLastPacketAt}
             carCatalogByOrdinal={carCatalogByOrdinal}
+            onCarSessionChange={onCarSessionChange}
             onRunChange={selectRun}
+            onRunToggle={onRunToggle}
           />
         )}
       </div>
@@ -325,8 +327,11 @@ function SidebarStatusFooter({
 }
 
 function ExpandedRuns({
-  runGroups,
+  carSessions,
   selectedValue,
+  selectedCarSessionId,
+  enabledRunIds,
+  hasCustomRunFilter,
   canSelectLive,
   liveRunId,
   liveTelemetry,
@@ -334,10 +339,15 @@ function ExpandedRuns({
   liveBadPackets,
   liveLastPacketAt,
   carCatalogByOrdinal,
-  onRunChange
+  onCarSessionChange,
+  onRunChange,
+  onRunToggle
 }: {
-  runGroups: RunDateGroup[];
+  carSessions: CarSessionSummary[];
   selectedValue: RunSelection | "__none";
+  selectedCarSessionId: string | null;
+  enabledRunIds: Set<string>;
+  hasCustomRunFilter: boolean;
   canSelectLive: boolean;
   liveRunId?: string;
   liveTelemetry?: Telemetry | null;
@@ -345,26 +355,28 @@ function ExpandedRuns({
   liveBadPackets?: number;
   liveLastPacketAt?: number | null;
   carCatalogByOrdinal: Map<number, CarCatalogItem>;
+  onCarSessionChange: (groupKey: string) => void;
   onRunChange: (runId: RunSelection | "__none") => void;
+  onRunToggle: (runId: string) => void;
 }) {
-  const [expandedDateKeys, setExpandedDateKeys] = React.useState<Set<string>>(() => new Set(runGroups.slice(0, 2).map((group) => group.dateKey)));
+  const [expandedCarKeys, setExpandedCarKeys] = React.useState<Set<string>>(() => new Set(carSessions.slice(0, 2).map((group) => group.id)));
 
   React.useEffect(() => {
-    setExpandedDateKeys((current) => {
+    setExpandedCarKeys((current) => {
       const next = new Set(current);
-      for (const group of runGroups) {
-        if (group.runs.some((run) => run.id === selectedValue)) next.add(group.dateKey);
+      for (const group of carSessions) {
+        if (group.id === selectedCarSessionId || group.runs.some((run) => run.id === selectedValue)) next.add(group.id);
       }
-      if (next.size === 0 && runGroups[0]) next.add(runGroups[0].dateKey);
+      if (next.size === 0 && carSessions[0]) next.add(carSessions[0].id);
       return next;
     });
-  }, [selectedValue, runGroups]);
+  }, [selectedCarSessionId, selectedValue, carSessions]);
 
-  function toggleDate(dateKey: string) {
-    setExpandedDateKeys((current) => {
+  function toggleCarSession(groupKey: string) {
+    setExpandedCarKeys((current) => {
       const next = new Set(current);
-      if (next.has(dateKey)) next.delete(dateKey);
-      else next.add(dateKey);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
       return next;
     });
   }
@@ -412,35 +424,38 @@ function ExpandedRuns({
       ) : null}
 
       <div className="grid gap-1">
-        <div className="px-3 pb-1 text-xs font-medium text-[#8e8e8e]">Runs</div>
-        {runGroups.map((group) => {
+        <div className="px-3 pb-1 text-xs font-medium text-[#8e8e8e]">Cars</div>
+        {carSessions.map((group) => {
           const { runs } = group;
-          const isExpanded = expandedDateKeys.has(group.dateKey);
-          const selectedInside = runs.some((run) => run.id === selectedValue);
-          const packetCount = runs.reduce((total, run) => total + run.packetCount, 0);
-          const badPacketCount = runs.reduce((total, run) => total + run.badPacketCount, 0);
+          const isExpanded = expandedCarKeys.has(group.id);
+          const selectedInside = group.id === selectedCarSessionId || runs.some((run) => run.id === selectedValue);
+          const enabledCount = runs.filter((run) => isRunEnabled(run.id, runs, enabledRunIds, hasCustomRunFilter)).length;
           return (
-            <div key={group.dateKey} className="grid gap-1">
+            <div key={group.id} className="grid gap-1">
               <button
                 className={cn(
                   "w-full rounded-lg px-2.5 py-2 text-left transition hover:bg-white/8",
                   selectedInside ? "bg-white/[0.07] text-white" : "text-[#d0d0d0]"
                 )}
                 type="button"
-                onClick={() => toggleDate(group.dateKey)}
+                onClick={() => {
+                  onCarSessionChange(group.id);
+                  toggleCarSession(group.id);
+                }}
                 aria-expanded={isExpanded}
               >
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex min-w-0 items-center gap-2">
                     {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                    <span className="truncate text-sm font-medium">{formatDateGroup(group.dateStart)}</span>
+                    <Car size={15} />
+                    <span className="truncate text-sm font-medium">{formatCar(runs[0] ?? group, carCatalogByOrdinal)}</span>
                   </div>
                   <Badge className="h-5 bg-white/8 text-[#bdbdbd]">{runs.length}</Badge>
                 </div>
                 <div className="mt-1 flex items-center gap-3 pl-6 text-xs text-[#8f8f8f]">
-                  <span>{packetCount.toLocaleString()} pkt</span>
+                  <span>{group.packetCount.toLocaleString()} pkt</span>
                   <span>{runs.length === 1 ? "1 run" : `${runs.length} runs`}</span>
-                  <span>{badPacketCount.toLocaleString()} bad</span>
+                  <span>{enabledCount}/{runs.length} enabled</span>
                 </div>
               </button>
 
@@ -452,8 +467,10 @@ function ExpandedRuns({
                       run={run}
                       index={runs.length - index}
                       isSelected={selectedValue === run.id}
+                      isEnabled={isRunEnabled(run.id, runs, enabledRunIds, hasCustomRunFilter)}
                       carCatalogByOrdinal={carCatalogByOrdinal}
                       onSelect={() => onRunChange(run.id)}
+                      onToggle={() => onRunToggle(run.id)}
                     />
                   ))}
                 </div>
@@ -462,7 +479,7 @@ function ExpandedRuns({
           );
         })}
 
-        {!canSelectLive && runGroups.length === 0 ? (
+        {!canSelectLive && carSessions.length === 0 ? (
           <div className="px-3 py-2 text-sm text-[#8f8f8f]">No saved runs yet.</div>
         ) : null}
       </div>
@@ -474,57 +491,88 @@ function RunButton({
   run,
   index,
   isSelected,
+  isEnabled,
   carCatalogByOrdinal,
-  onSelect
+  onSelect,
+  onToggle
 }: {
   run: RunSummary;
   index: number;
   isSelected: boolean;
+  isEnabled: boolean;
   carCatalogByOrdinal: Map<number, CarCatalogItem>;
   onSelect: () => void;
+  onToggle: () => void;
 }) {
   return (
-    <button
+    <div
       className={cn(
-        "w-full rounded-lg px-3 py-2.5 text-left transition hover:bg-white/8",
-        isSelected ? "bg-white/10 text-white" : "text-[#d0d0d0]"
+        "grid grid-cols-[minmax(0,1fr)_2rem] items-stretch overflow-hidden rounded-lg transition hover:bg-white/8",
+        isSelected ? "bg-white/10 text-white" : isEnabled ? "text-[#d0d0d0]" : "text-[#878787]"
       )}
-      type="button"
-      onClick={onSelect}
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="min-w-0 truncate text-sm font-medium">Run {index}</div>
-        {isSelected ? <Check size={15} /> : <span className="text-xs text-[#8f8f8f]">{splitReasonLabel(run.splitReason)}</span>}
-      </div>
-      <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-[#8f8f8f]">
-        <Car size={13} />
-        <span className="truncate">{formatCar(run, carCatalogByOrdinal)}</span>
-      </div>
-      <div className="mt-2 flex items-center gap-3 text-xs text-[#8f8f8f]">
-        <span>{run.packetCount.toLocaleString()} pkt</span>
-        <span>{formatDuration(run)}</span>
-        <span>{run.badPacketCount.toLocaleString()} bad</span>
-      </div>
-      <div className="mt-1 flex items-center gap-2 text-xs text-[#8f8f8f]">
-        <Clock size={13} />
-        <span className="truncate">{shortRunId(run.id)}</span>
-      </div>
-    </button>
+      <button
+        className="min-w-0 px-3 py-2.5 text-left"
+        type="button"
+        onClick={onSelect}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0 truncate text-sm font-medium">Run {index}</div>
+          {isSelected ? <Check size={15} /> : <span className="text-xs text-[#8f8f8f]">{splitReasonLabel(run.splitReason)}</span>}
+        </div>
+        <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-[#8f8f8f]">
+          <Car size={13} />
+          <span className="truncate">{formatCar(run, carCatalogByOrdinal)}</span>
+        </div>
+        <div className="mt-2 flex items-center gap-3 text-xs text-[#8f8f8f]">
+          <span>{run.packetCount.toLocaleString()} pkt</span>
+          <span>{formatDuration(run)}</span>
+          <span>{formatRunTime(run.startedAt)}</span>
+        </div>
+        <div className="mt-1 flex items-center gap-2 text-xs text-[#8f8f8f]">
+          <Clock size={13} />
+          <span className="truncate">{shortRunId(run.id)}</span>
+        </div>
+      </button>
+      <button
+        className={cn(
+          "flex items-center justify-center border-l border-white/[0.06] text-[#9faaa5] transition hover:bg-white/10 hover:text-white",
+          isEnabled && "text-[#70e0a6]"
+        )}
+        type="button"
+        onClick={onToggle}
+        aria-pressed={isEnabled}
+        aria-label={isEnabled ? `Disable Run ${index} from analysis` : `Enable Run ${index} for analysis`}
+        title={isEnabled ? "Included in analysis" : "Excluded from analysis"}
+      >
+        {isEnabled ? <Check size={14} /> : <span className="h-2.5 w-2.5 rounded-sm border border-current" />}
+      </button>
+    </div>
   );
 }
 
+function isRunEnabled(runId: string, groupRuns: RunSummary[], enabledRunIds: Set<string>, hasCustomRunFilter: boolean) {
+  return hasCustomRunFilter ? enabledRunIds.has(runId) : groupRuns.some((run) => run.id === runId);
+}
+
 function CollapsedRuns({
-  runGroups,
+  carSessions,
   selectedValue,
+  selectedCarSessionId,
   canSelectLive,
+  carCatalogByOrdinal,
+  onCarSessionChange,
   onRunChange
 }: {
-  runGroups: RunDateGroup[];
+  carSessions: CarSessionSummary[];
   selectedValue: RunSelection | "__none";
+  selectedCarSessionId: string | null;
   canSelectLive: boolean;
+  carCatalogByOrdinal: Map<number, CarCatalogItem>;
+  onCarSessionChange: (groupKey: string) => void;
   onRunChange: (runId: RunSelection | "__none") => void;
 }) {
-  const visibleRuns = runGroups.flatMap(({ runs }) => runs).slice(0, 10);
+  const visibleSessions = carSessions.slice(0, 10);
 
   return (
     <div className="flex flex-col items-center gap-2">
@@ -541,20 +589,28 @@ function CollapsedRuns({
           <Radio size={17} />
         </button>
       ) : null}
-      {visibleRuns.map((run) => (
+      {visibleSessions.map((session) => {
+        const run = session.runs[0];
+        const label = carClassLabel(session.carClass ?? run?.carClass) ?? "Car";
+        return (
         <button
-          key={run.id}
+          key={session.id}
           className={cn(
-            "flex size-10 items-center justify-center rounded-lg text-xs font-medium transition hover:bg-white/8",
-            selectedValue === run.id ? "bg-white/10 text-white" : "text-[#bdbdbd]"
+            "grid size-10 place-items-center rounded-lg text-[11px] font-semibold leading-none transition hover:bg-white/8",
+            selectedCarSessionId === session.id || session.runs.some((item) => item.id === selectedValue)
+              ? "bg-white/10 text-white"
+              : "text-[#bdbdbd]"
           )}
           type="button"
-          onClick={() => onRunChange(run.id)}
-          aria-label={`Run ${shortRunId(run.id)}`}
+          onClick={() => onCarSessionChange(session.id)}
+          aria-label={formatCar(run ?? session, carCatalogByOrdinal)}
+          title={formatCar(run ?? session, carCatalogByOrdinal)}
         >
-          {new Date(run.startedAt).getDate()}
+          <span>{label}</span>
+          <span className="text-[9px] text-[#8f8f8f]">{session.runs.length}</span>
         </button>
-      ))}
+        );
+      })}
     </div>
   );
 }

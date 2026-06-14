@@ -1,5 +1,5 @@
 import * as React from "react";
-import { CheckCircle2, Gamepad2, Gauge, Milestone, MonitorDot, Radio, Route, Settings2, Wifi } from "lucide-react";
+import { Check, CheckCircle2, Gamepad2, Gauge, Milestone, MonitorDot, Radio, Route, Settings2, Wifi } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { LiveInputsPanel } from "@/features/inputs/LiveInputsPanel";
@@ -12,8 +12,9 @@ import { RunSidebar } from "@/features/runs/RunSidebar";
 import { useLiveTelemetry } from "@/hooks/useLiveTelemetry";
 import { useRuns } from "@/hooks/useRuns";
 import { useTelemetryPlayback } from "@/hooks/useTelemetryPlayback";
-import { queryCars } from "@/services/api";
-import type { AppState, CarCatalogItem, DashboardTab, RunDetail, RunSelection, Telemetry } from "@/types/telemetry";
+import { cn } from "@/lib/utils";
+import { fetchRunDetail, queryCars } from "@/services/api";
+import type { AppState, CarCatalogItem, CarSessionSummary, DashboardTab, RunDetail, RunSelection, RunSummary, RunTelemetrySet, Telemetry } from "@/types/telemetry";
 
 const EMPTY_TELEMETRY_SAMPLES: Telemetry[] = [];
 
@@ -42,9 +43,46 @@ function sampleAtAbsoluteIndex(samples: Telemetry[], index: number | null, offse
   return samples[index - offset] ?? fallback ?? null;
 }
 
+function carClassLabel(value: number | null | undefined) {
+  if (value === 0) return "D";
+  if (value === 1) return "C";
+  if (value === 2) return "B";
+  if (value === 3) return "A";
+  if (value === 4) return "S1";
+  if (value === 5) return "S2";
+  if (value === 6) return "X";
+  return null;
+}
+
+function findSessionByRunId(carSessions: CarSessionSummary[], runId: string) {
+  return carSessions.find((session) => session.runs.some((run) => run.id === runId)) ?? null;
+}
+
+function formatSessionCar(
+  session: Pick<CarSessionSummary, "carOrdinal" | "carClass" | "carPerformanceIndex" | "drivetrainType"> | null,
+  carCatalogByOrdinal: Map<number, CarCatalogItem>
+) {
+  if (!session) return "Saved telemetry";
+  const catalogCar = session.carOrdinal === null || session.carOrdinal === undefined
+    ? null
+    : carCatalogByOrdinal.get(session.carOrdinal) ?? null;
+  const carName = catalogCar?.carName ?? "Unknown car";
+  const className = carClassLabel(session.carClass) ?? catalogCar?.carClass ?? null;
+  const classLabel = className && session.carPerformanceIndex !== null && session.carPerformanceIndex !== undefined
+    ? `${className} ${session.carPerformanceIndex}`
+    : className;
+  return [carName, classLabel].filter(Boolean).join(" / ");
+}
+
+function runLabel(run: RunSummary, sessionRuns: RunSummary[]) {
+  const index = sessionRuns.findIndex((item) => item.id === run.id);
+  const ordinal = index === -1 ? sessionRuns.length : sessionRuns.length - index;
+  return `Run ${ordinal}`;
+}
+
 export function App() {
   const { state, path, samples, handleState } = useLiveTelemetry();
-  const { runGroups, selectedRunId, setSelectedRunId, runDetail, isRunStreaming } = useRuns();
+  const { carSessions, selectedRunId, setSelectedRunId, runDetail, isRunStreaming } = useRuns();
   const [hoverIndex, setHoverIndex] = React.useState<number | null>(null);
   const [graphHoverIndex, setGraphHoverIndex] = React.useState<number | null>(null);
   const [dashboardTab, setDashboardTab] = React.useState<DashboardTab>("car");
@@ -53,6 +91,11 @@ export function App() {
   const [isTogglingUdpListening, setIsTogglingUdpListening] = React.useState(false);
   const [activePage, setActivePage] = React.useState<"runs" | "cars">("runs");
   const [carCatalog, setCarCatalog] = React.useState<CarCatalogItem[]>([]);
+  const [selectedCarSessionId, setSelectedCarSessionId] = React.useState<string | null>(null);
+  const [enabledRunIds, setEnabledRunIds] = React.useState<Set<string>>(() => new Set());
+  const [hasCustomRunFilter, setHasCustomRunFilter] = React.useState(false);
+  const [analysisRunDetails, setAnalysisRunDetails] = React.useState<RunDetail[]>([]);
+  const [isAnalysisLoading, setIsAnalysisLoading] = React.useState(false);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -72,9 +115,15 @@ export function App() {
   React.useEffect(() => {
     if (state.connected || selectedRunId !== "live") return;
     if (state.telemetry || state.packets > 0 || state.lastPacketAt) return;
-    const latestRun = runGroups[0]?.runs[0];
-    if (latestRun) setSelectedRunId(latestRun.id);
-  }, [selectedRunId, runGroups, state.connected, state.lastPacketAt, state.packets, state.telemetry, setSelectedRunId]);
+    const latestSession = carSessions[0];
+    const latestRun = latestSession?.runs[0];
+    if (latestSession && latestRun) {
+      setSelectedCarSessionId(latestSession.id);
+      setEnabledRunIds(new Set(latestSession.runs.map((run) => run.id)));
+      setHasCustomRunFilter(false);
+      setSelectedRunId(latestRun.id);
+    }
+  }, [selectedRunId, carSessions, state.connected, state.lastPacketAt, state.packets, state.telemetry, setSelectedRunId]);
 
   const sampleOffset = selectedRunId === "live" ? 0 : runDetail?.sampleWindow.start ?? 0;
   const historicalPath = runDetail?.path ?? [];
@@ -117,6 +166,35 @@ export function App() {
     }
     return carsByOrdinal;
   }, [carCatalog]);
+  const selectedCarSession = React.useMemo(() => {
+    if (selectedRunId === "live") return null;
+    return selectedCarSessionId
+      ? carSessions.find((session) => session.id === selectedCarSessionId) ?? findSessionByRunId(carSessions, selectedRunId)
+      : findSessionByRunId(carSessions, selectedRunId);
+  }, [selectedCarSessionId, selectedRunId, carSessions]);
+  const allSessionRunIds = React.useMemo(
+    () => new Set(selectedCarSession?.runs.map((run) => run.id) ?? []),
+    [selectedCarSession]
+  );
+  const effectiveEnabledRunIds = hasCustomRunFilter ? enabledRunIds : allSessionRunIds;
+  const enabledSessionRuns = React.useMemo(() => {
+    if (!selectedCarSession) return [];
+    return selectedCarSession.runs.filter((run) => effectiveEnabledRunIds.has(run.id));
+  }, [effectiveEnabledRunIds, selectedCarSession]);
+  const analysisRunIds = React.useMemo(
+    () => selectedRunId === "live" ? [] : enabledSessionRuns.map((run) => run.id),
+    [enabledSessionRuns, selectedRunId]
+  );
+  const analysisRunIdsKey = analysisRunIds.join("|");
+  const analysisSampleSets = React.useMemo<RunTelemetrySet[]>(() => {
+    if (!selectedCarSession) return [];
+    return analysisRunDetails.map((detail) => ({
+      runId: detail.run.id,
+      label: runLabel(detail.run, selectedCarSession.runs),
+      samples: detail.samples
+    }));
+  }, [analysisRunDetails, selectedCarSession]);
+  const selectedSessionLabel = formatSessionCar(selectedCarSession, carCatalogByOrdinal);
   const selectedRunLabel = selectedRunId === "live"
     ? "Live telemetry"
     : runDetail?.run
@@ -125,14 +203,137 @@ export function App() {
   const shouldShowFirstRunSetup = selectedRunId === "live"
     && !state.connected
     && !state.telemetry
-    && runGroups.length === 0;
+    && carSessions.length === 0;
+
+  React.useEffect(() => {
+    if (selectedRunId === "live") {
+      if (selectedCarSessionId !== null) setSelectedCarSessionId(null);
+      return;
+    }
+
+    const session = selectedCarSession;
+    if (!session) return;
+
+    if (selectedCarSessionId !== session.id) setSelectedCarSessionId(session.id);
+
+    const sessionRunIds = new Set(session.runs.map((run) => run.id));
+    if (!sessionRunIds.has(selectedRunId)) {
+      const fallbackRun = session.runs.find((run) => effectiveEnabledRunIds.has(run.id)) ?? session.runs[0];
+      if (fallbackRun) setSelectedRunId(fallbackRun.id);
+    }
+
+    if (!hasCustomRunFilter) return;
+
+    setEnabledRunIds((current) => {
+      const next = new Set(Array.from(current).filter((runId) => sessionRunIds.has(runId)));
+      return next.size > 0 ? next : sessionRunIds;
+    });
+  }, [effectiveEnabledRunIds, hasCustomRunFilter, selectedCarSession, selectedCarSessionId, selectedRunId, setSelectedRunId]);
+
+  React.useEffect(() => {
+    if (selectedRunId === "live" || analysisRunIds.length === 0) {
+      setAnalysisRunDetails([]);
+      setIsAnalysisLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsAnalysisLoading(true);
+
+    Promise.all(analysisRunIds.map(async (runId) => {
+      if (runDetail?.run.id === runId) return runDetail;
+      return fetchRunDetail(runId);
+    }))
+      .then((details) => {
+        if (cancelled) return;
+        const detailsById = new Map(
+          details
+            .filter((detail): detail is RunDetail => Boolean(detail))
+            .map((detail) => [detail.run.id, detail])
+        );
+        setAnalysisRunDetails(analysisRunIds.map((runId) => detailsById.get(runId)).filter((detail): detail is RunDetail => Boolean(detail)));
+      })
+      .catch((error) => {
+        console.warn(`Session run load failed: ${error instanceof Error ? error.message : String(error)}`);
+        if (!cancelled) setAnalysisRunDetails([]);
+      })
+      .finally(() => {
+        if (!cancelled) setIsAnalysisLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [analysisRunIds, analysisRunIdsKey, runDetail, selectedRunId]);
 
   function handleRunChange(runId: RunSelection) {
+    if (runId === "live") {
+      setSelectedCarSessionId(null);
+      setEnabledRunIds(new Set());
+      setHasCustomRunFilter(false);
+    } else {
+      const session = findSessionByRunId(carSessions, runId);
+      if (session) {
+        const isSameSession = selectedCarSessionId === session.id;
+        setSelectedCarSessionId(session.id);
+        if (!isSameSession) {
+          setEnabledRunIds(new Set(session.runs.map((run) => run.id)));
+          setHasCustomRunFilter(false);
+        } else if (hasCustomRunFilter && !enabledRunIds.has(runId)) {
+          setEnabledRunIds((current) => new Set([...current, runId]));
+        }
+      }
+    }
     setSelectedRunId(runId);
     setActivePage("runs");
     setHoverIndex(null);
     setGraphHoverIndex(null);
     playback.resetPlayback();
+  }
+
+  function handleCarSessionChange(sessionId: string) {
+    const session = carSessions.find((item) => item.id === sessionId);
+    const firstRun = session?.runs[0];
+    if (!session || !firstRun) return;
+
+    setSelectedCarSessionId(session.id);
+    setEnabledRunIds(new Set(session.runs.map((run) => run.id)));
+    setHasCustomRunFilter(false);
+    setSelectedRunId(firstRun.id);
+    setActivePage("runs");
+    setHoverIndex(null);
+    setGraphHoverIndex(null);
+    playback.resetPlayback();
+  }
+
+  function handleRunToggle(runId: string) {
+    if (!selectedCarSession) return;
+
+    const sessionRunIds = selectedCarSession.runs.map((run) => run.id);
+    const nextEnabled = hasCustomRunFilter
+      ? new Set(enabledRunIds)
+      : new Set(sessionRunIds);
+
+    if (nextEnabled.has(runId)) {
+      if (nextEnabled.size <= 1) return;
+      nextEnabled.delete(runId);
+    } else {
+      nextEnabled.add(runId);
+    }
+
+    const allEnabled = sessionRunIds.every((id) => nextEnabled.has(id));
+    setEnabledRunIds(nextEnabled);
+    setHasCustomRunFilter(!allEnabled);
+
+    if (selectedRunId !== "live" && !nextEnabled.has(selectedRunId)) {
+      const fallbackRun = selectedCarSession.runs.find((run) => nextEnabled.has(run.id));
+      if (fallbackRun) {
+        setSelectedRunId(fallbackRun.id);
+        setHoverIndex(null);
+        setGraphHoverIndex(null);
+        playback.resetPlayback();
+      }
+    }
   }
 
   function handleScrubPathIndex(index: number | null) {
@@ -159,10 +360,13 @@ export function App() {
         }}
       >
         <RunSidebar
-          runGroups={runGroups}
+          carSessions={carSessions}
           carCatalogByOrdinal={carCatalogByOrdinal}
           activePage={activePage}
           selectedRunId={selectedRunId}
+          selectedCarSessionId={selectedCarSessionId}
+          enabledRunIds={effectiveEnabledRunIds}
+          hasCustomRunFilter={hasCustomRunFilter}
           canSelectLive={state.connected}
           liveRunId={state.runId}
           liveTelemetry={state.telemetry}
@@ -179,7 +383,9 @@ export function App() {
           isCollapsed={isSidebarCollapsed}
           onCollapsedChange={setIsSidebarCollapsed}
           onPageChange={setActivePage}
+          onCarSessionChange={handleCarSessionChange}
           onRunChange={handleRunChange}
+          onRunToggle={handleRunToggle}
           onToggleUdpListening={handleToggleUdpListening}
         />
 
@@ -194,21 +400,40 @@ export function App() {
               onValueChange={(value) => setDashboardTab(value as DashboardTab)}
               className="min-h-0 flex-1 gap-0"
             >
-              <div className="flex shrink-0 items-center gap-4 border-b border-white/10 px-4 py-3">
-                <TabsList className="shrink-0">
-                  <TabsTrigger value="car" className="gap-2 px-3">
-                    <Gauge size={16} />
-                    Car
-                  </TabsTrigger>
-                  <TabsTrigger value="corner" className="gap-2 px-3">
-                    <Route size={16} />
-                    Corner
-                  </TabsTrigger>
-                  <TabsTrigger value="straights" className="gap-2 px-3">
-                    <Milestone size={16} />
-                    Straights
-                  </TabsTrigger>
-                </TabsList>
+              <div className="shrink-0 border-b border-white/10">
+                <div className="flex items-center gap-4 px-4 py-3">
+                  <TabsList className="shrink-0">
+                    <TabsTrigger value="car" className="gap-2 px-3">
+                      <Gauge size={16} />
+                      Car
+                    </TabsTrigger>
+                    <TabsTrigger value="corner" className="gap-2 px-3">
+                      <Route size={16} />
+                      Corner
+                    </TabsTrigger>
+                    <TabsTrigger value="straights" className="gap-2 px-3">
+                      <Milestone size={16} />
+                      Straights
+                    </TabsTrigger>
+                  </TabsList>
+                  {selectedCarSession ? (
+                    <div className="ml-auto min-w-0 text-right">
+                      <div className="truncate text-sm font-medium text-[#f1f5f3]">{selectedSessionLabel}</div>
+                      <div className="text-xs text-[#8e9994]">
+                        {enabledSessionRuns.length}/{selectedCarSession.runs.length} runs enabled{isAnalysisLoading ? " / loading" : ""}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+                {selectedCarSession ? (
+                  <RunToggleStrip
+                    runs={selectedCarSession.runs}
+                    selectedRunId={selectedRunId}
+                    enabledRunIds={effectiveEnabledRunIds}
+                    onRunChange={handleRunChange}
+                    onRunToggle={handleRunToggle}
+                  />
+                ) : null}
               </div>
 
               <TabsContent value="car" className="m-0 min-h-0 min-w-0 flex-1">
@@ -261,13 +486,13 @@ export function App() {
 
               <TabsContent value="corner" className="m-0 min-h-0 min-w-0 flex-1">
                 <section className="h-full min-h-0 p-4">
-                  <CornerPanel samples={displaySamples} />
+                  <CornerPanel samples={displaySamples} sampleSets={selectedRunId === "live" ? undefined : analysisSampleSets} />
                 </section>
               </TabsContent>
 
               <TabsContent value="straights" className="m-0 min-h-0 min-w-0 flex-1">
                 <section className="h-full min-h-0 p-4">
-                  <StraightsPanel samples={displaySamples} />
+                  <StraightsPanel samples={displaySamples} sampleSets={selectedRunId === "live" ? undefined : analysisSampleSets} />
                 </section>
               </TabsContent>
             </Tabs>
@@ -275,6 +500,63 @@ export function App() {
         </main>
       </div>
     </TooltipProvider>
+  );
+}
+
+function RunToggleStrip({
+  runs,
+  selectedRunId,
+  enabledRunIds,
+  onRunChange,
+  onRunToggle
+}: {
+  runs: RunSummary[];
+  selectedRunId: RunSelection;
+  enabledRunIds: Set<string>;
+  onRunChange: (runId: RunSelection) => void;
+  onRunToggle: (runId: string) => void;
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-2 overflow-x-auto border-t border-white/[0.06] px-4 py-2">
+      <span className="shrink-0 text-[10px] font-black uppercase tracking-[0.14em] text-[#7f8984]">Session runs</span>
+      {runs.map((run) => {
+        const label = runLabel(run, runs);
+        const isActive = selectedRunId === run.id;
+        const isEnabled = enabledRunIds.has(run.id);
+        return (
+          <div
+            key={run.id}
+            className={cn(
+              "grid shrink-0 grid-cols-[minmax(4.5rem,1fr)_1.85rem] overflow-hidden rounded-md border text-xs transition",
+              isActive ? "border-white/18 bg-white/10 text-white" : isEnabled ? "border-white/10 bg-white/[0.04] text-[#d5ddda]" : "border-white/[0.06] text-[#858f8a]"
+            )}
+          >
+            <button
+              className="min-w-0 px-2.5 py-1.5 text-left"
+              type="button"
+              onClick={() => onRunChange(run.id)}
+              aria-current={isActive ? "true" : undefined}
+            >
+              <span className="block truncate font-medium">{label}</span>
+              <span className="block truncate text-[10px] text-[#8e9994]">{new Date(run.startedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
+            </button>
+            <button
+              className={cn(
+                "grid place-items-center border-l border-white/[0.06] transition hover:bg-white/10 hover:text-white",
+                isEnabled && "text-[#70e0a6]"
+              )}
+              type="button"
+              onClick={() => onRunToggle(run.id)}
+              aria-pressed={isEnabled}
+              aria-label={isEnabled ? `Disable ${label} from analysis` : `Enable ${label} for analysis`}
+              title={isEnabled ? "Included in analysis" : "Excluded from analysis"}
+            >
+              {isEnabled ? <Check size={13} /> : <span className="h-2.5 w-2.5 rounded-sm border border-current" />}
+            </button>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

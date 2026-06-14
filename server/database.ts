@@ -4,11 +4,12 @@ import { randomUUID } from "node:crypto";
 import BetterSqliteDatabase from "better-sqlite3";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import type { PathSample, PowerBandEstimate, RunDateGroup, RunSampleWindow, RunSummary, Telemetry } from "../src/types/telemetry";
-import { runs, telemetryPackets } from "./schema";
+import type { CarSessionSummary, PathSample, PowerBandEstimate, RunSampleWindow, RunSummary, Telemetry } from "../src/types/telemetry";
+import { carSessions, runs, telemetryPackets } from "./schema";
 import { estimatePowerBand } from "./powerBand";
 
 const DEFAULT_DB_PATH = path.join(process.cwd(), "data", "telemetry.sqlite");
+const TELEMETRY_SCHEMA_VERSION = 2;
 
 type ValidPacketInput = {
   runId: string;
@@ -27,13 +28,33 @@ type BadPacketInput = {
 };
 
 function createSchema(sqlite: BetterSqliteDatabase.Database) {
+  const currentVersion = sqlite.pragma("user_version", { simple: true }) as number;
+  if (currentVersion !== TELEMETRY_SCHEMA_VERSION) {
+    resetTelemetrySchema(sqlite);
+  }
+
   sqlite.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
     PRAGMA foreign_keys = ON;
 
+    CREATE TABLE IF NOT EXISTS car_sessions (
+      id TEXT PRIMARY KEY,
+      started_at INTEGER NOT NULL,
+      last_packet_at INTEGER,
+      ended_at INTEGER,
+      run_count INTEGER NOT NULL DEFAULT 0,
+      packet_count INTEGER NOT NULL DEFAULT 0,
+      bad_packet_count INTEGER NOT NULL DEFAULT 0,
+      car_ordinal INTEGER,
+      car_class INTEGER,
+      car_performance_index INTEGER,
+      drivetrain_type INTEGER
+    );
+
     CREATE TABLE IF NOT EXISTS runs (
       id TEXT PRIMARY KEY,
+      car_session_id TEXT NOT NULL REFERENCES car_sessions(id) ON DELETE CASCADE,
       started_at INTEGER NOT NULL,
       last_packet_at INTEGER,
       ended_at INTEGER,
@@ -84,6 +105,23 @@ function createSchema(sqlite: BetterSqliteDatabase.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_runs_started_at
       ON runs(started_at);
+
+    CREATE INDEX IF NOT EXISTS idx_car_sessions_started_at
+      ON car_sessions(started_at);
+
+    PRAGMA user_version = ${TELEMETRY_SCHEMA_VERSION};
+  `);
+}
+
+function resetTelemetrySchema(sqlite: BetterSqliteDatabase.Database) {
+  sqlite.exec(`
+    PRAGMA foreign_keys = OFF;
+    DROP TABLE IF EXISTS run_power_analysis;
+    DROP TABLE IF EXISTS run_path_points;
+    DROP TABLE IF EXISTS telemetry_packets;
+    DROP TABLE IF EXISTS runs;
+    DROP TABLE IF EXISTS car_sessions;
+    PRAGMA foreign_keys = ON;
   `);
 }
 
@@ -93,18 +131,42 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
   const sqlite = new BetterSqliteDatabase(dbPath);
   createSchema(sqlite);
 
-  const db = drizzle(sqlite, { schema: { runs, telemetryPackets } });
+  const db = drizzle(sqlite, { schema: { carSessions, runs, telemetryPackets } });
 
   return {
     path: dbPath,
 
-    startRun(startedAt = Date.now(), id: string = randomUUID(), splitReason = "start") {
+    startCarSession(startedAt = Date.now(), id: string = randomUUID()) {
+      db.insert(carSessions).values({
+        id,
+        startedAt,
+        lastPacketAt: startedAt
+      }).run();
+      return { id, startedAt };
+    },
+
+    endCarSession(carSessionId: string, endedAt = Date.now()) {
+      db.update(carSessions)
+        .set({ endedAt })
+        .where(and(eq(carSessions.id, carSessionId), isNull(carSessions.endedAt)))
+        .run();
+    },
+
+    startRun(carSessionId: string, startedAt = Date.now(), id: string = randomUUID(), splitReason = "start") {
       db.insert(runs).values({
         id,
+        carSessionId,
         startedAt,
         lastPacketAt: startedAt,
         splitReason
       }).run();
+      db.update(carSessions)
+        .set({
+          runCount: sql`${carSessions.runCount} + 1`,
+          lastPacketAt: startedAt
+        })
+        .where(eq(carSessions.id, carSessionId))
+        .run();
       return { id, startedAt };
     },
 
@@ -160,6 +222,20 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
         .where(eq(runs.id, runId))
         .run();
 
+      const carSessionId = getRunCarSessionId(sqlite, runId);
+      if (carSessionId) {
+        db.update(carSessions)
+          .set({
+            lastPacketAt: receivedAt,
+            packetCount: sql`${carSessions.packetCount} + 1`,
+            carOrdinal: telemetry.CarOrdinal,
+            carClass: telemetry.CarClass,
+            carPerformanceIndex: telemetry.CarPerformanceIndex,
+            drivetrainType: telemetry.DrivetrainType
+          })
+          .where(eq(carSessions.id, carSessionId))
+          .run();
+      }
     },
 
     recordBadPacket({ runId, receivedAt, source, rawPacket, error }: BadPacketInput) {
@@ -183,16 +259,33 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
         .where(eq(runs.id, runId))
         .run();
 
+      const carSessionId = getRunCarSessionId(sqlite, runId);
+      if (carSessionId) {
+        db.update(carSessions)
+          .set({
+            lastPacketAt: receivedAt,
+            badPacketCount: sql`${carSessions.badPacketCount} + 1`
+          })
+          .where(eq(carSessions.id, carSessionId))
+          .run();
+      }
     },
 
-    listRunGroups(): RunDateGroup[] {
-      const runRows = db.select()
-        .from(runs)
-        .where(sql`${runs.packetCount} > 0`)
-        .orderBy(desc(runs.startedAt))
-        .all() as RunSummary[];
+    listCarSessions(): CarSessionSummary[] {
+      const sessionRows = db.select()
+        .from(carSessions)
+        .where(sql`${carSessions.packetCount} > 0`)
+        .orderBy(desc(carSessions.lastPacketAt), desc(carSessions.startedAt))
+        .all() as Omit<CarSessionSummary, "runs">[];
 
-      return groupRunsByDate(runRows);
+      return sessionRows.map((session) => ({
+        ...session,
+        runs: db.select()
+          .from(runs)
+          .where(and(eq(runs.carSessionId, session.id), sql`${runs.packetCount} > 0`))
+          .orderBy(desc(runs.startedAt))
+          .all() as RunSummary[]
+      }));
     },
 
     getRun(runId: string): RunSummary | null {
@@ -346,6 +439,12 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
             .run();
         }
 
+        sqlite.prepare(`
+          DELETE FROM car_sessions
+          WHERE packet_count = 0
+            AND id NOT IN (SELECT DISTINCT car_session_id FROM runs)
+        `).run();
+
         return emptyRuns.length;
       });
 
@@ -354,21 +453,6 @@ export function createTelemetryDatabase(dbPath = process.env.TELEMETRY_DB_PATH |
   };
 }
 
-function groupRunsByDate(runRows: RunSummary[]): RunDateGroup[] {
-  const groups = new Map<string, RunDateGroup>();
-
-  for (const run of runRows) {
-    const date = new Date(run.startedAt);
-    date.setHours(0, 0, 0, 0);
-    const dateStart = date.getTime();
-    const dateKey = date.toISOString();
-    const group = groups.get(dateKey);
-    if (group) {
-      group.runs.push(run);
-    } else {
-      groups.set(dateKey, { dateKey, dateStart, runs: [run] });
-    }
-  }
-
-  return Array.from(groups.values());
+function getRunCarSessionId(sqlite: BetterSqliteDatabase.Database, runId: string) {
+  return (sqlite.prepare("SELECT car_session_id AS carSessionId FROM runs WHERE id = ?").get(runId) as { carSessionId?: string } | undefined)?.carSessionId ?? null;
 }

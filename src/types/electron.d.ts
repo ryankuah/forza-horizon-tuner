@@ -1,13 +1,13 @@
 export {};
 
-import type { AppState, CarCatalogQuery, CarCatalogResult, RunDateGroup, RunDetail } from "./telemetry";
+import type { AppState, CarCatalogQuery, CarCatalogResult, CarSessionSummary, RunDetail } from "./telemetry";
 
 declare global {
   interface Window {
     telemetryApp: {
       getSnapshot: () => Promise<AppState>;
       setUdpListening: (isListening: boolean) => Promise<AppState>;
-      getRunGroups: () => Promise<RunDateGroup[]>;
+      getCarSessions: () => Promise<CarSessionSummary[]>;
       getRunDetail: (runId: string) => Promise<RunDetail | null>;
       queryCars: (query: CarCatalogQuery) => Promise<CarCatalogResult>;
       onTelemetryState: (callback: (_event: unknown, state: AppState) => void) => () => void;

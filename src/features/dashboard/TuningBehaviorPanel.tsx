@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { CornerEffect, PathSample, SvgPoint, Telemetry } from "@/types/telemetry";
+import type { CornerEffect, PathSample, RunTelemetrySet, SvgPoint, Telemetry } from "@/types/telemetry";
 import { average, clampNumber, radiansToDegrees } from "@/lib/math";
 import { formatValue } from "@/lib/format";
 import { buildPathFromTelemetry } from "@/features/map/pathSamples";
@@ -14,7 +14,7 @@ import {
 type TuningPhaseId = "entry" | "mid" | "exit";
 
 type CornerSummary = {
-  id: number;
+  id: string;
   label: string;
   effect: Exclude<CornerEffect, "straight">;
   samples: PathSample[];
@@ -68,8 +68,13 @@ const AXLE_SPLIT_SERIES: TraceSeries[] = [
   { label: "Rear R-L", color: "#ff8a6d", value: rearRightMinusLeftTravel, format: signedRatioLabel, domain: "symmetric-zero" }
 ];
 
-export function CornerPanel({ samples }: { samples: Telemetry[] }) {
-  const corners = React.useMemo(() => summarizeCorners(samples), [samples]);
+export function CornerPanel({ samples, sampleSets }: { samples: Telemetry[]; sampleSets?: RunTelemetrySet[] }) {
+  const corners = React.useMemo(
+    () => sampleSets?.length
+      ? sampleSets.flatMap((set) => summarizeCorners(set.samples, set.label))
+      : summarizeCorners(samples),
+    [sampleSets, samples]
+  );
 
   return (
     <div className="h-full min-h-0 min-w-0 overflow-auto">
@@ -78,7 +83,7 @@ export function CornerPanel({ samples }: { samples: Telemetry[] }) {
           No cornering sections detected yet.
         </div>
       ) : (
-        <div className="grid min-h-0 gap-7">
+        <div className="grid min-h-0 gap-8">
           {corners.map((corner) => (
             <CornerCard key={corner.id} corner={corner} />
           ))}
@@ -100,8 +105,8 @@ function CornerCard({ corner }: { corner: CornerSummary }) {
   const rearCombinedSlipSeries = React.useMemo(() => rearCombinedSlipUsageSeries(corner.effect), [corner.effect]);
 
   return (
-    <section className="grid min-w-0 content-start gap-3 border-b border-white/[0.08] pb-7 last:border-b-0 last:pb-0">
-      <div className="grid gap-2 border-b border-white/[0.07] pb-2">
+    <section className="grid min-w-0 content-start gap-3 pb-8 last:pb-0">
+      <div className="grid gap-2">
         <div className="min-w-0">
           <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
             <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${corner.effect === "leftCorner" ? "bg-[#63da97]" : "bg-[#e46645]"}`} />
@@ -172,9 +177,8 @@ function CornerOverviewGraphic({ corner, hoverProgress }: { corner: CornerSummar
   const hoverPoint = hoverProgress === null ? null : pointAtPathProgress(corner.pathPoints, hoverProgress);
 
   return (
-    <section className="grid min-w-0 gap-1.5 py-1">
+    <section className="grid min-w-0 gap-2 py-1 md:grid-cols-[minmax(0,1fr)_7rem] md:items-center">
       <svg className="h-[150px] w-full overflow-visible" viewBox="0 0 360 160" role="img" aria-label={`${corner.label} track shape`}>
-        <rect x="8" y="12" width="344" height="136" rx="8" fill="rgba(245,247,246,0.025)" stroke="rgba(245,247,246,0.08)" />
         <path d={pathData} fill="none" stroke="rgba(245,247,246,0.2)" strokeWidth="22" strokeLinecap="round" strokeLinejoin="round" />
         <path d={pathData} fill="none" stroke="rgba(245,247,246,0.55)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="10 12" />
         {phaseSegments.map((segment) => (
@@ -199,11 +203,11 @@ function CornerOverviewGraphic({ corner, hoverProgress }: { corner: CornerSummar
           </g>
         ) : null}
       </svg>
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid gap-1.5 md:content-center">
         {(["entry", "mid", "exit"] as TuningPhaseId[]).map((phase) => (
-          <div key={phase} className="grid gap-1">
-            <span className="h-1.5 rounded-full" style={{ backgroundColor: phaseColor(phase) }} />
-            <span className="text-[10px] font-black uppercase leading-none tracking-wide text-[#9ba6a1]">{phaseLabel(phase)}</span>
+          <div key={phase} className="flex min-w-0 items-center gap-1.5">
+            <span className="h-1.5 w-4 shrink-0 rounded-full" style={{ backgroundColor: phaseColor(phase) }} />
+            <span className="text-[9px] font-black uppercase leading-none tracking-wide text-[#9ba6a1]">{phaseLabel(phase)}</span>
           </div>
         ))}
       </div>
@@ -220,16 +224,28 @@ function PhaseMarker({ id, point }: { id: TuningPhaseId; point: SvgPoint }) {
   );
 }
 
-function summarizeCorners(samples: Telemetry[]): CornerSummary[] {
+function summarizeCorners(samples: Telemetry[], runLabelPrefix?: string): CornerSummary[] {
   const path = buildPathFromTelemetry(samples);
   const corners = buildCornerSegments(path);
 
   return corners
-    .map((corner) => summarizeCorner(corner.id, corner.effect, corner.samples))
+    .map((corner) => summarizeCorner(
+      runLabelPrefix ? `${runLabelPrefix}-${corner.id}` : String(corner.id),
+      corner.id,
+      corner.effect,
+      corner.samples,
+      runLabelPrefix
+    ))
     .filter((corner): corner is CornerSummary => Boolean(corner));
 }
 
-function summarizeCorner(id: number, effect: Exclude<CornerEffect, "straight">, samples: PathSample[]): CornerSummary | null {
+function summarizeCorner(
+  id: string,
+  localId: number,
+  effect: Exclude<CornerEffect, "straight">,
+  samples: PathSample[],
+  runLabelPrefix?: string
+): CornerSummary | null {
   if (samples.length < 3) return null;
   const distanceMeters = pathDistanceMeters(samples);
   if (distanceMeters <= 0) return null;
@@ -255,7 +271,7 @@ function summarizeCorner(id: number, effect: Exclude<CornerEffect, "straight">, 
 
   return {
     id,
-    label: `Corner ${String(id + 1).padStart(2, "0")} · ${effect === "leftCorner" ? "Left" : "Right"}`,
+    label: `${runLabelPrefix ? `${runLabelPrefix} / ` : ""}Corner ${String(localId + 1).padStart(2, "0")} · ${effect === "leftCorner" ? "Left" : "Right"}`,
     effect,
     samples,
     pathPoints: normalizeCornerPath(samples),

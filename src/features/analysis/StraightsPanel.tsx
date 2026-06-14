@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { PathSample, SvgPoint, Telemetry } from "@/types/telemetry";
+import type { PathSample, RunTelemetrySet, SvgPoint, Telemetry } from "@/types/telemetry";
 import { average, clampNumber } from "@/lib/math";
 import { formatValue } from "@/lib/format";
 import { buildPathFromTelemetry } from "@/features/map/pathSamples";
@@ -12,7 +12,7 @@ import {
 } from "@/features/dashboard/TrackSectionGraphs";
 
 type StraightSummary = {
-  id: number;
+  id: string;
   label: string;
   samples: PathSample[];
   pathPoints: SvgPoint[];
@@ -56,8 +56,13 @@ const REAR_SUSPENSION_TRAVEL_SERIES: TraceSeries[] = [
   { label: "RR travel", color: "#e46645", value: (sample) => sample.NormalizedSuspensionTravelRearRight, format: ratioLabel, domain: NORMALIZED_DOMAIN }
 ];
 
-export function StraightsPanel({ samples }: { samples: Telemetry[] }) {
-  const straights = React.useMemo(() => summarizeStraights(samples), [samples]);
+export function StraightsPanel({ samples, sampleSets }: { samples: Telemetry[]; sampleSets?: RunTelemetrySet[] }) {
+  const straights = React.useMemo(
+    () => sampleSets?.length
+      ? sampleSets.flatMap((set) => summarizeStraights(set.samples, set.label))
+      : summarizeStraights(samples),
+    [sampleSets, samples]
+  );
 
   return (
     <div className="h-full min-h-0 min-w-0 overflow-auto">
@@ -66,7 +71,7 @@ export function StraightsPanel({ samples }: { samples: Telemetry[] }) {
           No straight sections detected yet.
         </div>
       ) : (
-        <div className="grid min-h-0 gap-7">
+        <div className="grid min-h-0 gap-8">
           {straights.map((straight) => (
             <StraightCard key={straight.id} straight={straight} />
           ))}
@@ -80,8 +85,8 @@ function StraightCard({ straight }: { straight: StraightSummary }) {
   const [hoverProgress, setHoverProgress] = React.useState<number | null>(null);
 
   return (
-    <section className="grid min-w-0 content-start gap-3 border-b border-white/[0.08] pb-7 last:border-b-0 last:pb-0">
-      <div className="grid gap-2 border-b border-white/[0.07] pb-2">
+    <section className="grid min-w-0 content-start gap-3 pb-8 last:pb-0">
+      <div className="grid gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
           <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-[#63da97]" />
           <strong className="text-base leading-tight text-[#f5f7f6]">{straight.label}</strong>
@@ -140,9 +145,8 @@ function StraightOverviewGraphic({ straight, hoverProgress }: { straight: Straig
   const hoverPoint = hoverProgress === null ? null : pointAtPathProgress(straight.pathPoints, hoverProgress);
 
   return (
-    <section className="grid min-w-0 gap-1.5 py-1">
+    <section className="grid min-w-0 gap-2 py-1 md:grid-cols-[minmax(0,1fr)_7rem] md:items-center">
       <svg className="h-[150px] w-full overflow-visible" viewBox="0 0 360 160" role="img" aria-label={`${straight.label} track shape`}>
-        <rect x="8" y="12" width="344" height="136" rx="8" fill="rgba(245,247,246,0.025)" stroke="rgba(245,247,246,0.08)" />
         <path d={pathData} fill="none" stroke="rgba(245,247,246,0.2)" strokeWidth="22" strokeLinecap="round" strokeLinejoin="round" />
         <path d={pathData} fill="none" stroke="rgba(245,247,246,0.55)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="10 12" />
         <path d={direction.path} fill="none" stroke="#f5f7f6" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" opacity="0.9" />
@@ -155,7 +159,7 @@ function StraightOverviewGraphic({ straight, hoverProgress }: { straight: Straig
           </g>
         ) : null}
       </svg>
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid gap-1.5 md:content-center">
         <StraightLegend color="#63da97" label="Start" />
         <StraightLegend color="#e46645" label="End" />
       </div>
@@ -175,14 +179,14 @@ function StraightMarker({ label, point, color }: { label: string; point: SvgPoin
 
 function StraightLegend({ color, label }: { color: string; label: string }) {
   return (
-    <div className="grid gap-1">
-      <span className="h-1.5 rounded-full" style={{ backgroundColor: color }} />
-      <span className="text-[10px] font-black uppercase leading-none tracking-wide text-[#9ba6a1]">{label}</span>
+    <div className="flex min-w-0 items-center gap-1.5">
+      <span className="h-1.5 w-4 shrink-0 rounded-full" style={{ backgroundColor: color }} />
+      <span className="text-[9px] font-black uppercase leading-none tracking-wide text-[#9ba6a1]">{label}</span>
     </div>
   );
 }
 
-function summarizeStraights(samples: Telemetry[]): StraightSummary[] {
+function summarizeStraights(samples: Telemetry[], runLabelPrefix?: string): StraightSummary[] {
   const path = buildPathFromTelemetry(samples);
   if (path.length < MIN_STRAIGHT_SAMPLES) return [];
 
@@ -210,10 +214,10 @@ function summarizeStraights(samples: Telemetry[]): StraightSummary[] {
 
   return straightRuns
     .filter((run) => run.length >= MIN_STRAIGHT_SAMPLES && pathDistanceMeters(run) >= MIN_STRAIGHT_DISTANCE_METERS)
-    .map(summarizeStraight);
+    .map((run, index) => summarizeStraight(run, index, runLabelPrefix));
 }
 
-function summarizeStraight(samples: PathSample[], id: number): StraightSummary {
+function summarizeStraight(samples: PathSample[], localId: number, runLabelPrefix?: string): StraightSummary {
   const telemetrySamples = samples.map((sample) => sample.telemetry).filter((sample): sample is Telemetry => Boolean(sample));
   const distanceMeters = pathDistanceMeters(samples);
   const first = samples[0];
@@ -223,8 +227,8 @@ function summarizeStraight(samples: PathSample[], id: number): StraightSummary {
   const shiftCount = countGearChanges(telemetrySamples);
 
   return {
-    id,
-    label: `Straight ${String(id + 1).padStart(2, "0")}`,
+    id: runLabelPrefix ? `${runLabelPrefix}-${localId}` : String(localId),
+    label: `${runLabelPrefix ? `${runLabelPrefix} / ` : ""}Straight ${String(localId + 1).padStart(2, "0")}`,
     samples,
     pathPoints: normalizeStraightPath(samples),
     metrics: [

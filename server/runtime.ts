@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { createTelemetryDatabase } from "./database";
 import { enrichTelemetry, parseForzaPacket, type RawTelemetry } from "./forzaPacket";
 import { buildTuningAdvice, TelemetryWindow } from "./tuning";
-import type { Advice, AppState, RunDateGroup, RunDetail, Summary, Telemetry } from "../src/types/telemetry";
+import type { Advice, AppState, CarSessionSummary, RunDetail, Summary, Telemetry } from "../src/types/telemetry";
 
 type RuntimeState = {
   connected: boolean;
@@ -20,9 +20,16 @@ type RuntimeState = {
 
 type PendingRun = {
   id: string;
+  carSessionId: string | null;
   startedAt: number;
   persisted: boolean;
   splitReason: string;
+};
+
+type PendingCarSession = {
+  id: string;
+  startedAt: number;
+  persisted: boolean;
 };
 
 type TelemetryInput = {
@@ -54,7 +61,8 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     advice: []
   };
 
-  let currentRun = createPendingRun(Date.now(), "connection");
+  let currentCarSession: PendingCarSession | null = null;
+  let currentRun = createPendingRun(null, Date.now(), "connection");
   let telemetryWindow = new TelemetryWindow();
   let udp: dgram.Socket | null = null;
   let udpListening = false;
@@ -145,10 +153,10 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     };
   }
 
-  function listRunGroups(): { currentRunId: string; runGroups: RunDateGroup[] } {
+  function listCarSessions(): { currentRunId: string; carSessions: CarSessionSummary[] } {
     return {
       currentRunId: currentRun.id,
-      runGroups: database.listRunGroups()
+      carSessions: database.listCarSessions()
     };
   }
 
@@ -239,7 +247,7 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     }
 
     if (carIdentityChanged(state.last, telemetry)) {
-      startNewRun("car_change", receivedAt);
+      startNewCarSession("car_change", receivedAt);
       return;
     }
 
@@ -257,7 +265,25 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     if (currentRun.persisted) {
       database.endRun(currentRun.id, startedAt);
     }
-    currentRun = createPendingRun(startedAt, reason);
+    currentRun = createPendingRun(currentCarSession?.id ?? null, startedAt, reason);
+    resetCurrentRunState(reason);
+    console.log(`Prepared telemetry run ${currentRun.id} (${reason})`);
+  }
+
+  function startNewCarSession(reason: string, startedAt = Date.now()) {
+    if (currentRun.persisted) {
+      database.endRun(currentRun.id, startedAt);
+    }
+    if (currentCarSession?.persisted) {
+      database.endCarSession(currentCarSession.id, startedAt);
+    }
+    currentCarSession = createPendingCarSession(startedAt);
+    currentRun = createPendingRun(currentCarSession.id, startedAt, reason);
+    resetCurrentRunState(reason);
+    console.log(`Prepared car session ${currentCarSession.id} with telemetry run ${currentRun.id} (${reason})`);
+  }
+
+  function resetCurrentRunState(reason: string) {
     telemetryWindow = new TelemetryWindow();
     state.packets = 0;
     state.badPackets = 0;
@@ -265,12 +291,26 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     state.last = null;
     state.summary = null;
     state.advice = buildTuningAdvice(null, null);
-    console.log(`Prepared telemetry run ${currentRun.id} (${reason})`);
   }
 
-  function ensureCurrentRun(receivedAt: number) {
+  function ensureCurrentCarSession(receivedAt: number) {
+    if (!currentCarSession) {
+      currentCarSession = createPendingCarSession(receivedAt);
+    }
+    if (!currentCarSession.persisted) {
+      database.startCarSession(currentCarSession.startedAt, currentCarSession.id);
+      currentCarSession.persisted = true;
+      console.log(`Started car session ${currentCarSession.id}`);
+    }
+    return currentCarSession;
+  }
+
+  function ensureCurrentRun(carSessionId: string, receivedAt: number) {
+    if (currentRun.carSessionId !== carSessionId) {
+      currentRun = createPendingRun(carSessionId, currentRun.startedAt, currentRun.splitReason);
+    }
     if (!currentRun.persisted) {
-      database.startRun(currentRun.startedAt, currentRun.id, currentRun.splitReason);
+      database.startRun(carSessionId, currentRun.startedAt, currentRun.id, currentRun.splitReason);
       currentRun.persisted = true;
       console.log(`Started telemetry run ${currentRun.id}`);
     }
@@ -293,7 +333,8 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     telemetryWindow.add(telemetry);
     state.summary = telemetryWindow.summary();
     state.advice = buildTuningAdvice(state.last, state.summary);
-    const run = ensureCurrentRun(receivedAt);
+    const carSession = ensureCurrentCarSession(receivedAt);
+    const run = ensureCurrentRun(carSession.id, receivedAt);
     database.recordValidPacket({
       runId: run.id,
       receivedAt,
@@ -322,7 +363,7 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     stop,
     onState,
     snapshot,
-    listRunGroups,
+    listCarSessions,
     getRun,
     getRunDetail,
     iterateSampleJson,
@@ -448,9 +489,18 @@ function startSimulator(handleTelemetry: (input: TelemetryInput) => void) {
   }, 50);
 }
 
-function createPendingRun(startedAt = Date.now(), splitReason = "start"): PendingRun {
+function createPendingCarSession(startedAt = Date.now()): PendingCarSession {
   return {
     id: randomUUID(),
+    startedAt,
+    persisted: false
+  };
+}
+
+function createPendingRun(carSessionId: string | null, startedAt = Date.now(), splitReason = "start"): PendingRun {
+  return {
+    id: randomUUID(),
+    carSessionId,
     startedAt,
     persisted: false,
     splitReason

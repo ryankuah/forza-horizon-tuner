@@ -1,22 +1,22 @@
 import * as React from "react";
-import { fetchRunDetail, fetchRunGroups } from "@/services/api";
-import type { RunDateGroup, RunDetail, RunSelection } from "@/types/telemetry";
+import { fetchCarSessions, fetchRunDetail } from "@/services/api";
+import type { CarSessionSummary, RunDetail, RunSelection } from "@/types/telemetry";
 
 export function useRuns() {
-  const [runGroups, setRunGroups] = React.useState<RunDateGroup[]>([]);
+  const [carSessions, setCarSessions] = React.useState<CarSessionSummary[]>([]);
   const [selectedRunId, setSelectedRunId] = React.useState<RunSelection>("live");
   const [runDetail, setRunDetail] = React.useState<RunDetail | null>(null);
   const [isRunStreaming, setIsRunStreaming] = React.useState(false);
 
   React.useEffect(() => {
     let cancelled = false;
-    const loadRunGroups = async () => {
-      const nextRunGroups = await fetchRunGroups();
-      if (!cancelled) setRunGroups(nextRunGroups);
+    const loadCarSessions = async () => {
+      const nextCarSessions = await fetchCarSessions();
+      if (!cancelled) setCarSessions(nextCarSessions);
     };
 
-    loadRunGroups();
-    const interval = window.setInterval(loadRunGroups, 5000);
+    loadCarSessions();
+    const interval = window.setInterval(loadCarSessions, 5000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
@@ -53,8 +53,8 @@ export function useRuns() {
   }, [selectedRunId]);
 
   return {
-    runGroups,
-    setRunGroups,
+    carSessions,
+    setCarSessions,
     selectedRunId,
     setSelectedRunId,
     runDetail,

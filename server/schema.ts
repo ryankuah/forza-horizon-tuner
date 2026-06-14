@@ -1,7 +1,28 @@
 import { blob, index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
+export const carSessions = sqliteTable(
+  "car_sessions",
+  {
+    id: text("id").primaryKey(),
+    startedAt: integer("started_at").notNull(),
+    lastPacketAt: integer("last_packet_at"),
+    endedAt: integer("ended_at"),
+    runCount: integer("run_count").notNull().default(0),
+    packetCount: integer("packet_count").notNull().default(0),
+    badPacketCount: integer("bad_packet_count").notNull().default(0),
+    carOrdinal: integer("car_ordinal"),
+    carClass: integer("car_class"),
+    carPerformanceIndex: integer("car_performance_index"),
+    drivetrainType: integer("drivetrain_type")
+  },
+  (table) => [
+    index("idx_car_sessions_started_at").on(table.startedAt)
+  ]
+);
+
 export const runs = sqliteTable("runs", {
   id: text("id").primaryKey(),
+  carSessionId: text("car_session_id").notNull().references(() => carSessions.id, { onDelete: "cascade" }),
   startedAt: integer("started_at").notNull(),
   lastPacketAt: integer("last_packet_at"),
   endedAt: integer("ended_at"),

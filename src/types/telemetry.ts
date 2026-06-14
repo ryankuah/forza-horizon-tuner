@@ -210,8 +210,23 @@ export type TelemetryValue = number | string | null | undefined;
 export type TelemetryFieldName = Extract<keyof Telemetry, string>;
 export type DashboardTab = "car" | "corner" | "straights";
 export type RunSelection = "live" | string;
+export type CarSessionSummary = {
+  id: string;
+  startedAt: number;
+  lastPacketAt: number | null;
+  endedAt: number | null;
+  runCount: number;
+  packetCount: number;
+  badPacketCount: number;
+  carOrdinal: number | null;
+  carClass: number | null;
+  carPerformanceIndex: number | null;
+  drivetrainType: number | null;
+  runs: RunSummary[];
+};
 export type RunSummary = {
   id: string;
+  carSessionId: string;
   startedAt: number;
   lastPacketAt: number | null;
   endedAt: number | null;
@@ -224,11 +239,6 @@ export type RunSummary = {
   carPerformanceIndex: number | null;
   drivetrainType: number | null;
 };
-export type RunDateGroup = {
-  dateKey: string;
-  dateStart: number;
-  runs: RunSummary[];
-};
 export type RunDetail = {
   run: RunSummary;
   path: PathSample[];
@@ -240,6 +250,11 @@ export type RunDetail = {
 export type RunSampleWindow = {
   start: number;
   total: number;
+  samples: Telemetry[];
+};
+export type RunTelemetrySet = {
+  runId: string;
+  label: string;
   samples: Telemetry[];
 };
 export type PowerBandBin = {

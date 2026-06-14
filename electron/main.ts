@@ -51,7 +51,7 @@ function startCarCatalog() {
 function setupTelemetryIpc() {
   ipcMain.handle("telemetry:snapshot", () => runtime?.snapshot());
   ipcMain.handle("telemetry:set-udp-listening", (_event, isListening: boolean) => runtime?.setUdpListening(isListening));
-  ipcMain.handle("telemetry:run-groups", () => runtime?.listRunGroups().runGroups ?? []);
+  ipcMain.handle("telemetry:car-sessions", () => runtime?.listCarSessions().carSessions ?? []);
   ipcMain.handle("telemetry:run-detail", (_event, runId: string) => runtime?.getRunDetail(runId) ?? null);
   ipcMain.handle("cars:query", (_event, query: CarCatalogQuery) => carCatalog?.queryCars(query) ?? { cars: [], total: 0, matched: 0 });
 }
