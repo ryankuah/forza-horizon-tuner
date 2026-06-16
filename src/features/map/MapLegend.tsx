@@ -30,7 +30,7 @@ export function MapLegend({ hasSelectedPoint, hasSelectedCorner }: { hasSelected
       {hasSelectedPoint && !hasSelectedCorner ? (
         <span className="flex items-center gap-1.5">
           <span className="h-2 w-4 rounded-full border border-[#f3d09b] bg-[#f3d09b]/20" />
-          Pinned sample
+          Map cursor
         </span>
       ) : null}
     </div>

@@ -12,6 +12,7 @@ data/fh6-cars.csv
 data/fh6-cars-missing.json
 
 artifacts/
+local-dataout-sim/
 
 .DS_Store
 *.log

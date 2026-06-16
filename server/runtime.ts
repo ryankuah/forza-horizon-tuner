@@ -5,7 +5,17 @@ import { randomUUID } from "node:crypto";
 import { createTelemetryDatabase } from "./database";
 import { enrichTelemetry, parseForzaPacket, type RawTelemetry } from "./forzaPacket";
 import { buildTuningAdvice, TelemetryWindow } from "./tuning";
-import type { Advice, AppState, CarSessionSummary, RunDetail, Summary, Telemetry } from "../src/types/telemetry";
+import type {
+  Advice,
+  AppState,
+  RunSampleWindowQuery,
+  RunSectionPageQuery,
+  RunSectionSamplesQuery,
+  RunsPageQuery,
+  RunType,
+  Summary,
+  Telemetry
+} from "../src/types/telemetry";
 
 type RuntimeState = {
   connected: boolean;
@@ -16,39 +26,34 @@ type RuntimeState = {
   last: Telemetry | null;
   summary: Summary | null;
   advice: Advice[];
+  completedRunsVersion: number;
 };
 
 type PendingRun = {
   id: string;
-  carSessionId: string | null;
   startedAt: number;
   persisted: boolean;
   splitReason: string;
-};
-
-type PendingCarSession = {
-  id: string;
-  startedAt: number;
-  persisted: boolean;
+  runType: RunType | null;
 };
 
 type TelemetryInput = {
   telemetry: Telemetry;
   receivedAt: number;
   source: string;
-  rawPacket?: Buffer | null;
 };
 
 type RuntimeOptions = {
   udpPort?: number;
   dbPath?: string;
+  rawDbPath?: string;
   simulate?: boolean;
 };
 
 export function createTelemetryRuntime(options: RuntimeOptions = {}) {
   const udpPort = options.udpPort ?? Number(process.env.FORZA_UDP_PORT || 9999);
-  const database = createTelemetryDatabase(options.dbPath);
-  const removedEmptyRuns = database.deleteEmptyRuns();
+  const database = createTelemetryDatabase(options.dbPath, options.rawDbPath);
+  const removedIncompleteRuns = database.deleteIncompleteRuns();
   const events = new EventEmitter();
   const state: RuntimeState = {
     connected: false,
@@ -58,11 +63,11 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     lastSource: null,
     last: null,
     summary: null,
-    advice: []
+    advice: buildTuningAdvice(null, null),
+    completedRunsVersion: 0
   };
 
-  let currentCarSession: PendingCarSession | null = null;
-  let currentRun = createPendingRun(null, Date.now(), "connection");
+  let currentRun = createPendingRun(Date.now(), "connection");
   let telemetryWindow = new TelemetryWindow();
   let udp: dgram.Socket | null = null;
   let udpListening = false;
@@ -70,7 +75,6 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
   let simulatorTimer: NodeJS.Timeout | null = null;
 
   function start() {
-    startUdpListening();
     staleTimer = setInterval(markStaleConnections, 1000);
 
     if (options.simulate) {
@@ -83,7 +87,9 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
   function stop() {
     if (staleTimer) clearInterval(staleTimer);
     if (simulatorTimer) clearInterval(simulatorTimer);
-    stopUdpListening({ broadcastState: false });
+    finalizeCurrentRun("app_quit");
+    stopUdpListening({ broadcastState: false, finalizeRun: false });
+    database.close();
   }
 
   function startUdpListening() {
@@ -113,8 +119,14 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     return snapshot();
   }
 
-  function stopUdpListening({ broadcastState = true } = {}) {
-    if (!udp) return snapshot();
+  function stopUdpListening({ broadcastState = true, finalizeRun = true } = {}) {
+    if (finalizeRun) finalizeCurrentRun("listener_stop");
+    if (!udp) {
+      udpListening = false;
+      state.connected = false;
+      if (broadcastState) broadcast();
+      return snapshot();
+    }
 
     const socket = udp;
     udp = null;
@@ -149,52 +161,45 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
       summary: state.summary,
       advice: state.advice,
       udpListening,
-      runId: currentRun.id
+      runId: currentRun.persisted ? currentRun.id : undefined,
+      completedRunsVersion: state.completedRunsVersion
     };
   }
 
-  function listCarSessions(): { currentRunId: string; carSessions: CarSessionSummary[] } {
-    return {
-      currentRunId: currentRun.id,
-      carSessions: database.listCarSessions()
-    };
+  function listRunsPage(query?: RunsPageQuery) {
+    return database.listRunsPage(query);
   }
 
-  function getRunDetail(runId: string, limit = 3000): RunDetail | null {
-    const run = database.getRun(runId);
-    if (!run) return null;
-
-    database.ensurePathPoints(runId);
-    const path = database.getPathPoints(runId);
-    const powerBand = database.getPowerBand(runId);
-    const sampleWindow = database.getSampleWindow(runId, Math.max(0, run.packetCount - clampSampleLimit(limit)), clampSampleLimit(limit));
-    return {
-      run,
-      path,
-      samples: sampleWindow.samples,
-      sampleWindow,
-      powerBand,
-      summary: summarizeSamples(sampleWindow.samples)
-    };
+  function getRunSummary(runId: string) {
+    return database.getRunSummary(runId);
   }
 
-  function getRun(runId: string) {
-    return database.getRun(runId);
+  function getRunSampleWindow(query: RunSampleWindowQuery) {
+    return database.getRunSampleWindow(query);
   }
 
-  function iterateSampleJson(runId: string) {
-    return database.iterateSampleJson(runId);
+  function getRunPath(runId: string) {
+    return database.getRunPath(runId);
+  }
+
+  function listRunSections(query: RunSectionPageQuery) {
+    return database.listRunSections(query);
+  }
+
+  function getRunSectionSamples(query: RunSectionSamplesQuery) {
+    return database.getRunSectionSamples(query);
   }
 
   function logStartup() {
     console.log("");
     console.log("Forza Horizon Tuner");
     console.log(`Telemetry DB:   ${database.path}`);
+    console.log(`Raw packet DB:  ${database.rawPath}`);
     console.log(`Run ID:         ${currentRun.id} (pending)`);
-    if (removedEmptyRuns > 0) {
-      console.log(`Cleaned empty runs: ${removedEmptyRuns}`);
+    if (removedIncompleteRuns > 0) {
+      console.log(`Cleaned incomplete runs: ${removedIncompleteRuns}`);
     }
-    console.log(`UDP telemetry: 0.0.0.0:${udpPort}`);
+    console.log(`UDP telemetry: 0.0.0.0:${udpPort} (paused)`);
     console.log("LAN IPs:");
     for (const ip of localIps()) {
       console.log(`  ${ip}`);
@@ -212,75 +217,112 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     const source = `${remote.address}:${remote.port}`;
 
     try {
+      database.recordRawPacket({ receivedAt, source, rawPacket: message });
+    } catch (error) {
+      console.error(`Failed to save raw UDP packet: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    try {
       const telemetry = enrichTelemetry(parseForzaPacket(message), receivedAt);
-      maybeStartNewRunForReconnect(receivedAt);
-      maybeStartNewRunForTelemetry(telemetry, receivedAt);
-      handleTelemetry({ telemetry, receivedAt, source, rawPacket: message });
+      handleTelemetry({ telemetry, receivedAt, source });
     } catch (error) {
       state.badPackets += 1;
-      if (currentRun.persisted) {
-        database.recordBadPacket({
-          runId: currentRun.id,
-          receivedAt,
-          source,
-          rawPacket: message,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
+      state.lastPacketAt = receivedAt;
+      state.lastSource = source;
       console.error(`Failed to parse UDP packet: ${error instanceof Error ? error.message : String(error)}`);
+      broadcast();
     }
   }
 
-  function maybeStartNewRunForReconnect(receivedAt: number) {
-    if (!state.lastPacketAt) return;
-    if (state.connected) return;
-    if (receivedAt - state.lastPacketAt <= 2500) return;
-    startNewRun("udp_reconnect", receivedAt);
+  function handleTelemetry({ telemetry, receivedAt, source }: TelemetryInput) {
+    const previousTelemetry = state.last;
+    const previousPacketAt = state.lastPacketAt;
+    const wasConnected = state.connected;
+
+    state.connected = true;
+    state.lastPacketAt = receivedAt;
+    state.lastSource = source;
+
+    if (telemetry.IsRaceOn !== 1) {
+      state.connected = false;
+      state.last = null;
+      finalizeCurrentRun("menu");
+      state.advice = buildTuningAdvice(null, state.summary);
+      broadcast();
+      return;
+    }
+
+    maybeSplitRunForTelemetry(telemetry, receivedAt, previousTelemetry, previousPacketAt, wasConnected);
+    const run = ensureCurrentRun(telemetry, receivedAt, source);
+
+    state.last = telemetry;
+    state.packets += 1;
+    telemetryWindow.add(telemetry);
+    state.summary = telemetryWindow.summary();
+    state.advice = buildTuningAdvice(state.last, state.summary);
+    database.recordValidPacket({
+      runId: run.id,
+      receivedAt,
+      source,
+      telemetry
+    });
+    broadcast();
   }
 
-  function maybeStartNewRunForTelemetry(telemetry: Telemetry, receivedAt: number) {
-    if (telemetry.IsRaceOn !== 1 || state.last?.IsRaceOn !== 1) return;
+  function maybeSplitRunForTelemetry(
+    telemetry: Telemetry,
+    receivedAt: number,
+    previousTelemetry: Telemetry | null,
+    previousPacketAt: number | null,
+    wasConnected: boolean
+  ) {
+    if (!previousTelemetry || previousTelemetry.IsRaceOn !== 1) return;
 
-    if (state.lastPacketAt && receivedAt - state.lastPacketAt > 15000) {
-      startNewRun("afk", receivedAt);
+    if (previousPacketAt && receivedAt - previousPacketAt > 15000) {
+      startNewRun("long_gap", receivedAt);
       return;
     }
 
-    if (carIdentityChanged(state.last, telemetry)) {
-      startNewCarSession("car_change", receivedAt);
+    if (!wasConnected && previousPacketAt && receivedAt - previousPacketAt > 2500) {
+      startNewRun("udp_reconnect", receivedAt);
       return;
     }
 
-    if (quickTravelDetected(state.last, telemetry, state.lastPacketAt, receivedAt)) {
+    const nextRunType = classifyRunType(telemetry);
+    if (currentRun.persisted && currentRun.runType && currentRun.runType !== nextRunType) {
+      startNewRun("run_type_change", receivedAt);
+      return;
+    }
+
+    if (carIdentityChanged(previousTelemetry, telemetry)) {
+      startNewRun("car_change", receivedAt);
+      return;
+    }
+
+    if (quickTravelDetected(previousTelemetry, telemetry, previousPacketAt, receivedAt)) {
       startNewRun("quick_travel", receivedAt);
       return;
     }
 
-    if (telemetry.TimestampMS + 100 < state.last.TimestampMS) {
+    if (telemetry.TimestampMS + 100 < previousTelemetry.TimestampMS) {
       startNewRun("telemetry_reset", receivedAt);
     }
   }
 
   function startNewRun(reason: string, startedAt = Date.now()) {
-    if (currentRun.persisted) {
-      database.endRun(currentRun.id, startedAt);
-    }
-    currentRun = createPendingRun(currentCarSession?.id ?? null, startedAt, reason);
+    finalizeCurrentRun(reason, startedAt);
+    currentRun = createPendingRun(startedAt, reason);
     resetCurrentRunState(reason);
     console.log(`Prepared telemetry run ${currentRun.id} (${reason})`);
   }
 
-  function startNewCarSession(reason: string, startedAt = Date.now()) {
-    if (currentRun.persisted) {
-      database.endRun(currentRun.id, startedAt);
-    }
-    if (currentCarSession?.persisted) {
-      database.endCarSession(currentCarSession.id, startedAt);
-    }
-    currentCarSession = createPendingCarSession(startedAt);
-    currentRun = createPendingRun(currentCarSession.id, startedAt, reason);
+  function finalizeCurrentRun(reason: string, endedAt = Date.now()) {
+    if (!currentRun.persisted) return null;
+    const completed = database.finalizeRun(currentRun.id, endedAt, reason);
+    if (completed) state.completedRunsVersion += 1;
+    currentRun = createPendingRun(endedAt, reason);
     resetCurrentRunState(reason);
-    console.log(`Prepared car session ${currentCarSession.id} with telemetry run ${currentRun.id} (${reason})`);
+    return completed;
   }
 
   function resetCurrentRunState(reason: string) {
@@ -293,56 +335,23 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
     state.advice = buildTuningAdvice(null, null);
   }
 
-  function ensureCurrentCarSession(receivedAt: number) {
-    if (!currentCarSession) {
-      currentCarSession = createPendingCarSession(receivedAt);
-    }
-    if (!currentCarSession.persisted) {
-      database.startCarSession(currentCarSession.startedAt, currentCarSession.id);
-      currentCarSession.persisted = true;
-      console.log(`Started car session ${currentCarSession.id}`);
-    }
-    return currentCarSession;
-  }
-
-  function ensureCurrentRun(carSessionId: string, receivedAt: number) {
-    if (currentRun.carSessionId !== carSessionId) {
-      currentRun = createPendingRun(carSessionId, currentRun.startedAt, currentRun.splitReason);
-    }
+  function ensureCurrentRun(telemetry: Telemetry, receivedAt: number, source: string) {
+    const runType = classifyRunType(telemetry);
     if (!currentRun.persisted) {
-      database.startRun(carSessionId, currentRun.startedAt, currentRun.id, currentRun.splitReason);
+      currentRun.startedAt = receivedAt;
+      currentRun.runType = runType;
+      database.startRun({
+        id: currentRun.id,
+        startedAt: receivedAt,
+        splitReason: currentRun.splitReason,
+        runType,
+        telemetry,
+        source
+      });
       currentRun.persisted = true;
       console.log(`Started telemetry run ${currentRun.id}`);
     }
     return currentRun;
-  }
-
-  function handleTelemetry({ telemetry, receivedAt, source, rawPacket = null }: TelemetryInput) {
-    state.connected = true;
-    state.lastPacketAt = receivedAt;
-    state.lastSource = source;
-    state.last = telemetry;
-
-    if (telemetry.IsRaceOn !== 1) {
-      state.advice = buildTuningAdvice(null, state.summary);
-      broadcast();
-      return;
-    }
-
-    state.packets += 1;
-    telemetryWindow.add(telemetry);
-    state.summary = telemetryWindow.summary();
-    state.advice = buildTuningAdvice(state.last, state.summary);
-    const carSession = ensureCurrentCarSession(receivedAt);
-    const run = ensureCurrentRun(carSession.id, receivedAt);
-    database.recordValidPacket({
-      runId: run.id,
-      receivedAt,
-      source,
-      rawPacket,
-      telemetry
-    });
-    broadcast();
   }
 
   function markStaleConnections() {
@@ -359,14 +368,17 @@ export function createTelemetryRuntime(options: RuntimeOptions = {}) {
 
   return {
     databasePath: database.path,
+    rawDatabasePath: database.rawPath,
     start,
     stop,
     onState,
     snapshot,
-    listCarSessions,
-    getRun,
-    getRunDetail,
-    iterateSampleJson,
+    listRunsPage,
+    getRunSummary,
+    getRunSampleWindow,
+    getRunPath,
+    listRunSections,
+    getRunSectionSamples,
     setUdpListening,
     logStartup
   };
@@ -464,12 +476,12 @@ function startSimulator(handleTelemetry: (input: TelemetryInput) => void) {
       Boost: 8 + Math.sin(phase) * 4,
       Fuel: 0.7,
       DistanceTraveled: tick * 2,
-      BestLap: 0,
+      BestLap: tick > 300 ? 64.2 : 0,
       LastLap: 0,
-      CurrentLap: tick / 20,
-      CurrentRaceTime: tick / 20,
-      LapNumber: 1,
-      RacePosition: 1,
+      CurrentLap: tick > 300 ? tick / 20 : 0,
+      CurrentRaceTime: tick > 300 ? tick / 20 : 0,
+      LapNumber: tick > 300 ? 1 : 0,
+      RacePosition: tick > 300 ? 1 : 0,
       Accel: Math.round(130 + Math.max(0, Math.sin(phase)) * 125),
       Brake: Math.round(Math.max(0, Math.cos(phase * 0.7)) * 120),
       Clutch: 0,
@@ -489,22 +501,25 @@ function startSimulator(handleTelemetry: (input: TelemetryInput) => void) {
   }, 50);
 }
 
-function createPendingCarSession(startedAt = Date.now()): PendingCarSession {
+function createPendingRun(startedAt = Date.now(), splitReason = "start"): PendingRun {
   return {
     id: randomUUID(),
     startedAt,
-    persisted: false
+    persisted: false,
+    splitReason,
+    runType: null
   };
 }
 
-function createPendingRun(carSessionId: string | null, startedAt = Date.now(), splitReason = "start"): PendingRun {
-  return {
-    id: randomUUID(),
-    carSessionId,
-    startedAt,
-    persisted: false,
-    splitReason
-  };
+function classifyRunType(telemetry: Telemetry): RunType {
+  return telemetry.BestLap > 0
+    || telemetry.LastLap > 0
+    || telemetry.CurrentLap > 0
+    || telemetry.CurrentRaceTime > 0
+    || telemetry.LapNumber > 0
+    || telemetry.RacePosition > 0
+    ? "event"
+    : "freeroam";
 }
 
 function carIdentityChanged(previous: Telemetry, telemetry: Telemetry) {
@@ -523,20 +538,6 @@ function quickTravelDetected(previous: Telemetry, telemetry: Telemetry, previous
 
   const distance = Math.hypot(telemetry.PositionX - previous.PositionX, telemetry.PositionZ - previous.PositionZ);
   return distance > 1200;
-}
-
-function summarizeSamples(samples: Telemetry[]) {
-  const runWindow = new TelemetryWindow();
-  for (const sample of samples) {
-    runWindow.add(sample);
-  }
-  return runWindow.summary();
-}
-
-function clampSampleLimit(value: unknown) {
-  const limit = Number(value || 5000);
-  if (!Number.isFinite(limit)) return 5000;
-  return Math.min(250000, Math.max(1, Math.round(limit)));
 }
 
 function localIps() {

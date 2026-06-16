@@ -1,9 +1,8 @@
 import * as React from "react";
 import { Progress } from "@/components/ui/progress";
-import { estimatePowerBand } from "@/features/analysis/powerBandAnalysis";
 import { formatGear, formatSignedPercent, formatValue } from "@/lib/format";
 import { clampNumber, clampPercent } from "@/lib/math";
-import type { PowerBandEstimate, Telemetry } from "@/types/telemetry";
+import type { Telemetry } from "@/types/telemetry";
 
 const labelClass = "text-xs font-semibold text-muted-foreground";
 
@@ -31,27 +30,23 @@ const inputTraceFields: InputTraceField[] = [
   { name: "throttlePct", label: "Throttle", color: "#63da97", min: 0, max: 100, suffix: "%" }
 ];
 const INPUT_GRAPH_WINDOW_SIZE = 3000;
-const MIN_INPUT_GRAPH_WINDOW_SIZE = 250;
-const MAX_INPUT_GRAPH_WINDOW_SIZE = 20000;
-const INPUT_GRAPH_ZOOM_FACTOR = 1.18;
+const GRAPH_PLAYHEAD_RATIO = 0.75;
 
 export function LiveInputsPanel({
   telemetry,
   samples,
   mode = "live",
   currentSampleIndex = null,
-  hoverSampleIndex = null,
   sampleOffset = 0,
-  powerBand = null,
-  onGraphHoverIndex = () => undefined
+  hoverSampleIndex = null,
+  onGraphHoverIndex
 }: {
   telemetry: Telemetry | null;
   samples: Telemetry[];
   mode?: LiveInputsPanelMode;
   currentSampleIndex?: number | null;
-  hoverSampleIndex?: number | null;
   sampleOffset?: number;
-  powerBand?: PowerBandEstimate | null;
+  hoverSampleIndex?: number | null;
   onGraphHoverIndex?: (index: number | null) => void;
 }) {
   if (mode === "graph") {
@@ -60,8 +55,8 @@ export function LiveInputsPanel({
         telemetry={telemetry}
         samples={samples}
         currentSampleIndex={currentSampleIndex}
-        hoverSampleIndex={hoverSampleIndex}
         sampleOffset={sampleOffset}
+        hoverSampleIndex={hoverSampleIndex}
         onGraphHoverIndex={onGraphHoverIndex}
       />
     );
@@ -79,8 +74,6 @@ export function LiveInputsPanel({
   const powerRatio = clampNumber((telemetry?.powerHp ?? 0) / 1200, 0, 1);
   const torqueRatio = clampNumber((telemetry?.torqueNm ?? 0) / 1500, 0, 1);
   const boostRatio = clampNumber((telemetry?.Boost ?? 0) / 30, 0, 1);
-  const localPowerBand = React.useMemo(() => estimatePowerBand(samples), [samples]);
-  const powerBandEstimate = powerBand ?? localPowerBand;
 
   return (
     <section className="grid min-h-0 grid-cols-[190px_minmax(0,1fr)] gap-3 border-border bg-card/80 p-3">
@@ -102,9 +95,8 @@ export function LiveInputsPanel({
       </div>
 
       <div className="grid min-w-0 content-center gap-2.5">
-        <RpmPowerBandDisplay
+        <RpmDisplay
           telemetry={telemetry}
-          estimate={powerBandEstimate}
           maxRpm={maxRpm}
           rpmPercent={rpmPercent}
           speed={`${formatValue(speedKmh, { precision: 0 })} km/h`}
@@ -123,89 +115,29 @@ function InputTracesPanel({
   telemetry,
   samples,
   currentSampleIndex,
-  hoverSampleIndex,
   sampleOffset,
+  hoverSampleIndex,
   onGraphHoverIndex
 }: {
   telemetry: Telemetry | null;
   samples: Telemetry[];
   currentSampleIndex: number | null;
-  hoverSampleIndex: number | null;
   sampleOffset: number;
-  onGraphHoverIndex: (index: number | null) => void;
+  hoverSampleIndex: number | null;
+  onGraphHoverIndex?: (index: number | null) => void;
 }) {
-  const [windowStart, setWindowStart] = React.useState(0);
-  const [windowSize, setWindowSize] = React.useState(INPUT_GRAPH_WINDOW_SIZE);
-  const dragRef = React.useRef<{ pointerId: number; lastClientX: number; width: number } | null>(null);
-  const effectiveWindowSize = Math.min(samples.length || windowSize, windowSize);
-  const maxWindowStart = Math.max(0, samples.length - effectiveWindowSize);
-  const clampedWindowStart = Math.min(windowStart, maxWindowStart);
-  const windowEnd = Math.min(samples.length, clampedWindowStart + effectiveWindowSize);
-  const plottedSamples = samples.length > 0 ? samples.slice(clampedWindowStart, windowEnd) : telemetry ? [telemetry] : [];
-
-  React.useEffect(() => {
-    setWindowSize((current) => clampNumber(current, MIN_INPUT_GRAPH_WINDOW_SIZE, Math.max(MIN_INPUT_GRAPH_WINDOW_SIZE, Math.min(MAX_INPUT_GRAPH_WINDOW_SIZE, samples.length || INPUT_GRAPH_WINDOW_SIZE))));
-    setWindowStart((current) => Math.min(current, Math.max(0, samples.length - effectiveWindowSize)));
-  }, [effectiveWindowSize, samples.length]);
-
-  React.useEffect(() => {
-    if (currentSampleIndex === null) return;
-    setWindowStart(clampNumber(currentSampleIndex - sampleOffset - Math.floor(effectiveWindowSize / 2), 0, maxWindowStart));
-  }, [currentSampleIndex, effectiveWindowSize, maxWindowStart, sampleOffset]);
-
-  function panGraphWindow(delta: number) {
-    if (samples.length <= effectiveWindowSize && delta > 0) return;
-    setWindowStart((current) => clampNumber(current + delta, 0, maxWindowStart));
-  }
-
-  function zoomGraphWindow(deltaY: number) {
-    if (samples.length <= MIN_INPUT_GRAPH_WINDOW_SIZE) return;
-
-    const centerIndex = clampedWindowStart + effectiveWindowSize / 2;
-    const zoomFactor = deltaY > 0 ? INPUT_GRAPH_ZOOM_FACTOR : 1 / INPUT_GRAPH_ZOOM_FACTOR;
-    const maxWindowSize = Math.max(MIN_INPUT_GRAPH_WINDOW_SIZE, Math.min(MAX_INPUT_GRAPH_WINDOW_SIZE, samples.length));
-    const nextWindowSize = clampNumber(Math.round(effectiveWindowSize * zoomFactor), MIN_INPUT_GRAPH_WINDOW_SIZE, maxWindowSize);
-    const nextMaxWindowStart = Math.max(0, samples.length - nextWindowSize);
-
-    setWindowSize(nextWindowSize);
-    setWindowStart(clampNumber(Math.round(centerIndex - nextWindowSize / 2), 0, nextMaxWindowStart));
-  }
-
-  function handleTracePointerDown(event: React.PointerEvent<SVGSVGElement>) {
-    dragRef.current = {
-      pointerId: event.pointerId,
-      lastClientX: event.clientX,
-      width: Math.max(1, event.currentTarget.getBoundingClientRect().width)
-    };
-    event.currentTarget.setPointerCapture(event.pointerId);
-  }
-
-  function handleTracePointerMove(event: React.PointerEvent<SVGSVGElement>) {
-    const drag = dragRef.current;
-    if (drag?.pointerId === event.pointerId) {
-      event.preventDefault();
-      const deltaX = event.clientX - drag.lastClientX;
-      drag.lastClientX = event.clientX;
-      drag.width = Math.max(1, event.currentTarget.getBoundingClientRect().width);
-      const deltaSamples = Math.round((-deltaX / drag.width) * effectiveWindowSize);
-      if (deltaSamples !== 0) panGraphWindow(deltaSamples);
-      return;
-    }
-
-    onGraphHoverIndex(pointerInputSampleIndex(event, sampleOffset + clampedWindowStart, plottedSamples.length));
-  }
-
-  function handleTracePointerEnd(event: React.PointerEvent<SVGSVGElement>) {
-    if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  }
-
-  function handleTraceWheel(event: React.WheelEvent<SVGSVGElement>) {
-    event.preventDefault();
-    zoomGraphWindow(event.deltaY || event.deltaX);
-  }
+  const graphWindow = React.useMemo(
+    () => pinnedGraphWindow(samples, sampleOffset, currentSampleIndex, INPUT_GRAPH_WINDOW_SIZE),
+    [currentSampleIndex, sampleOffset, samples]
+  );
+  const plottedSamples = samples.length > 0
+    ? samples.slice(graphWindow.sliceStart, graphWindow.sliceEnd)
+    : telemetry ? [telemetry] : [];
+  const plottedSampleOffset = sampleOffset + graphWindow.sliceStart;
+  const currentSample = sampleAtAbsoluteInputIndex(samples, sampleOffset, graphWindow.currentIndex);
+  const windowLabel = samples.length > 0
+    ? `${(graphWindow.sliceStart + 1).toLocaleString()}-${graphWindow.sliceEnd.toLocaleString()} / ${samples.length.toLocaleString()}`
+    : `${plottedSamples.length.toLocaleString()} samples`;
 
   return (
     <section className="grid min-h-0 gap-3 border-border bg-card/80 p-3">
@@ -213,38 +145,23 @@ function InputTracesPanel({
         <div className="min-w-0">
           <h2 className="truncate text-sm font-black text-[#f5f7f6]">Input traces</h2>
           <p className="truncate text-xs font-semibold text-[#9ba6a1]">
-            {samples.length > 0
-              ? `${(clampedWindowStart + 1).toLocaleString()}-${windowEnd.toLocaleString()} / ${samples.length.toLocaleString()} (${effectiveWindowSize.toLocaleString()} visible)`
-              : `${plottedSamples.length.toLocaleString()} samples`}
+            {windowLabel} / playhead pinned
           </p>
         </div>
         <span className="shrink-0 text-[10px] font-black uppercase text-[#66736d]">Under map</span>
       </div>
-      {samples.length > effectiveWindowSize ? (
-        <input
-          className="h-2 w-full accent-[#63da97]"
-          type="range"
-          min={0}
-          max={maxWindowStart}
-          step={Math.max(1, Math.floor(effectiveWindowSize / 4))}
-          value={clampedWindowStart}
-          onChange={(event) => setWindowStart(Number(event.currentTarget.value))}
-          aria-label="Input trace sample window"
-        />
-      ) : null}
       <div className="grid min-h-0 min-w-0 grid-cols-1 gap-3 md:grid-cols-3">
         {inputTraceFields.map((field) => (
           <InputTrace
             key={field.name}
             field={field}
             samples={plottedSamples}
-            sampleOffset={sampleOffset + clampedWindowStart}
-            currentSampleIndex={currentSampleIndex}
+            sampleOffset={plottedSampleOffset}
+            domainStart={graphWindow.domainStart}
+            domainEnd={graphWindow.domainEnd}
+            currentSampleIndex={graphWindow.currentIndex}
             hoverSampleIndex={hoverSampleIndex}
-            onTracePointerDown={handleTracePointerDown}
-            onTracePointerMove={handleTracePointerMove}
-            onTracePointerEnd={handleTracePointerEnd}
-            onTraceWheel={handleTraceWheel}
+            currentSample={currentSample}
             onGraphHoverIndex={onGraphHoverIndex}
           />
         ))}
@@ -257,37 +174,39 @@ function InputTrace({
   field,
   samples,
   sampleOffset,
+  domainStart,
+  domainEnd,
   currentSampleIndex,
   hoverSampleIndex,
-  onTracePointerDown,
-  onTracePointerMove,
-  onTracePointerEnd,
-  onTraceWheel,
+  currentSample,
   onGraphHoverIndex
 }: {
   field: InputTraceField;
   samples: Telemetry[];
   sampleOffset: number;
+  domainStart: number;
+  domainEnd: number;
   currentSampleIndex: number | null;
   hoverSampleIndex: number | null;
-  onTracePointerDown: (event: React.PointerEvent<SVGSVGElement>) => void;
-  onTracePointerMove: (event: React.PointerEvent<SVGSVGElement>) => void;
-  onTracePointerEnd: (event: React.PointerEvent<SVGSVGElement>) => void;
-  onTraceWheel: (event: React.WheelEvent<SVGSVGElement>) => void;
-  onGraphHoverIndex: (index: number | null) => void;
+  currentSample: Telemetry | null;
+  onGraphHoverIndex?: (index: number | null) => void;
 }) {
   const values = React.useMemo(() => buildInputSeries(samples, field.name, sampleOffset), [field.name, sampleOffset, samples]);
-  const hoverSample = sampleAtAbsoluteInputIndex(samples, sampleOffset, hoverSampleIndex);
-  const hoverValue = hoverSample?.[field.name];
-  const latest = typeof hoverValue === "number" && Number.isFinite(hoverValue) ? hoverValue : values.at(-1)?.value ?? 0;
-  const path = React.useMemo(() => inputTracePath(values, field.min, field.max), [field.max, field.min, values]);
-  const firstIndex = sampleOffset;
-  const lastIndex = sampleOffset + samples.length - 1;
-  const currentX = inputIndicatorX(currentSampleIndex, firstIndex, lastIndex);
-  const hoverX = inputIndicatorX(hoverSampleIndex, firstIndex, lastIndex);
+  const currentValue = currentSample?.[field.name];
+  const latest = typeof currentValue === "number" && Number.isFinite(currentValue) ? currentValue : values.at(-1)?.value ?? 0;
+  const path = React.useMemo(() => inputTracePath(values, field.min, field.max, domainStart, domainEnd), [domainEnd, domainStart, field.max, field.min, values]);
+  const currentX = inputIndicatorX(currentSampleIndex, domainStart, domainEnd);
+  const hoverX = inputIndicatorX(hoverSampleIndex, domainStart, domainEnd);
   const zeroY = field.min < 0 && field.max > 0
     ? 54 - ((0 - field.min) / (field.max - field.min)) * 44 - 5
     : null;
+
+  function handlePointerMove(event: React.PointerEvent<SVGSVGElement>) {
+    if (!onGraphHoverIndex) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const xRatio = clampNumber((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1);
+    onGraphHoverIndex(Math.round(domainStart + xRatio * Math.max(1, domainEnd - domainStart)));
+  }
 
   return (
     <div className="grid min-h-[104px] min-w-0 grid-rows-[auto_minmax(0,1fr)] border border-white/[0.07] bg-[#101312] p-2.5">
@@ -298,17 +217,13 @@ function InputTrace({
         </span>
       </div>
       <svg
-        className="h-[68px] w-full min-w-0 cursor-ew-resize overflow-visible"
+        className="h-[68px] w-full min-w-0 overflow-visible"
         viewBox="0 0 240 68"
         preserveAspectRatio="none"
         role="img"
         aria-label={`${field.label} input over time`}
-        onPointerDown={onTracePointerDown}
-        onPointerMove={onTracePointerMove}
-        onPointerUp={onTracePointerEnd}
-        onPointerCancel={onTracePointerEnd}
-        onWheel={onTraceWheel}
-        onPointerLeave={() => onGraphHoverIndex(null)}
+        onPointerMove={handlePointerMove}
+        onPointerLeave={() => onGraphHoverIndex?.(null)}
       >
         <path d="M0 56 H240 M0 34 H240 M0 12 H240" className="stroke-white/[0.06] [stroke-width:1]" />
         {zeroY !== null ? (
@@ -324,7 +239,7 @@ function InputTrace({
           <path d={`M${currentX.toFixed(2)} 6 V62`} className="stroke-[#f3d09b]/85 [stroke-width:1.5]" vectorEffect="non-scaling-stroke" />
         ) : null}
         {hoverX !== null ? (
-          <path d={`M${hoverX.toFixed(2)} 6 V62`} className="stroke-[#f5f7f6]/80 [stroke-dasharray:4_3] [stroke-width:1.2]" vectorEffect="non-scaling-stroke" />
+          <path d={`M${hoverX.toFixed(2)} 6 V62`} className="stroke-[#f5f7f6]/80 [stroke-dasharray:4_4] [stroke-width:1.5]" vectorEffect="non-scaling-stroke" />
         ) : null}
       </svg>
     </div>
@@ -355,36 +270,26 @@ function buildInputSeries(samples: Telemetry[], fieldName: keyof Telemetry, samp
   return series;
 }
 
-function inputTracePath(series: InputSeriesPoint[], min: number, max: number) {
+function inputTracePath(series: InputSeriesPoint[], min: number, max: number, domainStart: number, domainEnd: number) {
   if (series.length === 0) return "";
   const width = 240;
   const height = 68;
   const paddingY = 6;
-  const lastIndex = series.at(-1)?.index ?? 0;
-  const firstIndex = series[0]?.index ?? 0;
-  const indexSpan = Math.max(1, lastIndex - firstIndex);
+  const indexSpan = Math.max(1, domainEnd - domainStart);
   const valueSpan = Math.max(1, max - min);
 
   return series.map((point, pointIndex) => {
-    const x = ((point.index - firstIndex) / indexSpan) * width;
+    const x = ((point.index - domainStart) / indexSpan) * width;
     const normalizedValue = clampNumber((point.value - min) / valueSpan, 0, 1);
     const y = height - paddingY - normalizedValue * (height - paddingY * 2);
     return `${pointIndex === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`;
   }).join(" ");
 }
 
-function pointerInputSampleIndex(event: React.PointerEvent<SVGSVGElement>, sampleOffset: number, sampleCount: number) {
-  if (sampleCount <= 0) return null;
-
-  const rect = event.currentTarget.getBoundingClientRect();
-  const ratio = clampNumber((event.clientX - rect.left) / Math.max(rect.width, 1), 0, 1);
-  return sampleOffset + Math.min(sampleCount - 1, Math.max(0, Math.round(ratio * (sampleCount - 1))));
-}
-
-function inputIndicatorX(index: number | null, firstIndex: number, lastIndex: number) {
-  if (index === null || index < firstIndex || index > lastIndex) return null;
-  const span = Math.max(1, lastIndex - firstIndex);
-  return ((index - firstIndex) / span) * 240;
+function inputIndicatorX(index: number | null, domainStart: number, domainEnd: number) {
+  if (index === null || index < domainStart || index > domainEnd) return null;
+  const span = Math.max(1, domainEnd - domainStart);
+  return ((index - domainStart) / span) * 240;
 }
 
 function sampleAtAbsoluteInputIndex(samples: Telemetry[], sampleOffset: number, index: number | null) {
@@ -392,15 +297,32 @@ function sampleAtAbsoluteInputIndex(samples: Telemetry[], sampleOffset: number, 
   return samples[index - sampleOffset] ?? null;
 }
 
-function RpmPowerBandDisplay({
+function pinnedGraphWindow(samples: Telemetry[], sampleOffset: number, currentSampleIndex: number | null, windowSize: number) {
+  const sampleCount = samples.length;
+  const fallbackCurrentIndex = sampleCount > 0 ? sampleOffset + sampleCount - 1 : sampleOffset;
+  const currentIndex = currentSampleIndex ?? fallbackCurrentIndex;
+  const historyCount = Math.floor(windowSize * GRAPH_PLAYHEAD_RATIO);
+  const domainStart = currentIndex - historyCount;
+  const domainEnd = domainStart + windowSize - 1;
+  const sliceStart = clampNumber(domainStart - sampleOffset, 0, sampleCount);
+  const sliceEnd = clampNumber(domainEnd - sampleOffset + 1, sliceStart, sampleCount);
+
+  return {
+    currentIndex,
+    domainStart,
+    domainEnd,
+    sliceStart,
+    sliceEnd
+  };
+}
+
+function RpmDisplay({
   telemetry,
-  estimate,
   maxRpm,
   rpmPercent,
   speed
 }: {
   telemetry: Telemetry | null;
-  estimate: PowerBandEstimate | null;
   maxRpm: number;
   rpmPercent: number;
   speed: string;
@@ -408,8 +330,6 @@ function RpmPowerBandDisplay({
   const rpm = telemetry?.CurrentEngineRpm ?? 0;
   const idleRpm = telemetry?.EngineIdleRpm ?? 0;
   const idlePercent = clampNumber((idleRpm / maxRpm) * 100, 0, 100);
-  const bandStartPercent = estimate ? clampNumber((estimate.bandStartRpm / maxRpm) * 100, 0, 100) : 0;
-  const bandEndPercent = estimate ? clampNumber((estimate.bandEndRpm / maxRpm) * 100, 0, 100) : 0;
   const rpmTicks = buildRpmTicks(maxRpm);
 
   return (
@@ -431,28 +351,6 @@ function RpmPowerBandDisplay({
             />
           ))}
         </div>
-        {estimate ? (
-          <>
-            <span
-              className="absolute top-1 text-[9px] font-black leading-none tabular-nums text-[#63da97]"
-              style={{ left: `clamp(0px, calc(${bandStartPercent}% - 22px), calc(100% - 44px))` }}
-            >
-              {formatValue(estimate.bandStartRpm, { precision: 0 })}
-            </span>
-            <span
-              className="absolute top-1 text-right text-[9px] font-black leading-none tabular-nums text-[#63da97]"
-              style={{ left: `clamp(0px, calc(${bandEndPercent}% - 22px), calc(100% - 44px))` }}
-            >
-              {formatValue(estimate.bandEndRpm, { precision: 0 })}
-            </span>
-            <div className="absolute inset-x-2 bottom-1.5 h-3.5">
-              <div
-                className="absolute h-full rounded-sm bg-[#63da97]/28 ring-1 ring-[#63da97]/45"
-                style={{ left: `${bandStartPercent}%`, width: `${Math.max(1, bandEndPercent - bandStartPercent)}%` }}
-              />
-            </div>
-          </>
-        ) : null}
         <div className="absolute inset-y-1.5 left-2 right-2">
           <div className="absolute bottom-0 top-0 w-px -translate-x-1/2 bg-white/25" style={{ left: `${idlePercent}%` }} />
           <div
@@ -464,7 +362,7 @@ function RpmPowerBandDisplay({
 
       <div className="grid grid-cols-3 gap-2 px-1 text-[10px] font-black uppercase leading-none text-[#9ba6a1]">
         <span className="truncate text-left">Idle {formatValue(idleRpm, { precision: 0 })}</span>
-        <span className="truncate text-center">Peak {estimate ? formatValue(estimate.peakPowerRpm, { precision: 0 }) : "0"}</span>
+        <span className="truncate text-center">RPM</span>
         <span className="truncate text-right">Redline {formatValue(maxRpm, { precision: 0 })}</span>
       </div>
     </div>

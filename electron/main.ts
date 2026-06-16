@@ -4,7 +4,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { createCarCatalog } from "../server/carCatalog";
 import { createTelemetryRuntime } from "../server/runtime";
-import type { AppState, CarCatalogQuery } from "../src/types/telemetry";
+import type {
+  AppState,
+  CarCatalogQuery,
+  RunSampleWindowQuery,
+  RunSectionPageQuery,
+  RunSectionSamplesQuery,
+  RunsPageQuery
+} from "../src/types/telemetry";
 
 let mainWindow: BrowserWindow | null = null;
 let runtime: ReturnType<typeof createTelemetryRuntime> | null = null;
@@ -35,7 +42,8 @@ function carCatalogPath() {
 
 function startTelemetryRuntime() {
   runtime = createTelemetryRuntime({
-    dbPath: path.join(app.getPath("userData"), "telemetry.sqlite")
+    dbPath: path.join(app.getPath("userData"), "telemetry.sqlite"),
+    rawDbPath: path.join(app.getPath("userData"), "raw-telemetry.sqlite")
   });
   runtime.onState((state) => {
     mainWindow?.webContents.send("telemetry:state", state);
@@ -51,8 +59,12 @@ function startCarCatalog() {
 function setupTelemetryIpc() {
   ipcMain.handle("telemetry:snapshot", () => runtime?.snapshot());
   ipcMain.handle("telemetry:set-udp-listening", (_event, isListening: boolean) => runtime?.setUdpListening(isListening));
-  ipcMain.handle("telemetry:car-sessions", () => runtime?.listCarSessions().carSessions ?? []);
-  ipcMain.handle("telemetry:run-detail", (_event, runId: string) => runtime?.getRunDetail(runId) ?? null);
+  ipcMain.handle("telemetry:runs-page", (_event, query: RunsPageQuery) => runtime?.listRunsPage(query) ?? { runs: [], nextCursor: null, previousCursor: null, hasNextPage: false, hasPreviousPage: false });
+  ipcMain.handle("telemetry:run-summary", (_event, runId: string) => runtime?.getRunSummary(runId) ?? null);
+  ipcMain.handle("telemetry:run-sample-window", (_event, query: RunSampleWindowQuery) => runtime?.getRunSampleWindow(query) ?? { start: 0, total: 0, samples: [] });
+  ipcMain.handle("telemetry:run-path", (_event, runId: string) => runtime?.getRunPath(runId) ?? []);
+  ipcMain.handle("telemetry:run-sections", (_event, query: RunSectionPageQuery) => runtime?.listRunSections(query) ?? { runId: query.runId, type: query.type, page: query.page ?? 0, limit: query.limit ?? 8, total: 0, sections: [] });
+  ipcMain.handle("telemetry:run-section-samples", (_event, query: RunSectionSamplesQuery) => runtime?.getRunSectionSamples(query) ?? null);
   ipcMain.handle("cars:query", (_event, query: CarCatalogQuery) => carCatalog?.queryCars(query) ?? { cars: [], total: 0, matched: 0 });
 }
 
@@ -66,7 +78,7 @@ async function createMainWindow() {
     icon: appIconPath(),
     title: "",
     titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 16, y: 18 },
+    trafficLightPosition: { x: 16, y: 20 },
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,

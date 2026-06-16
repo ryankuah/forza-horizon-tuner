@@ -4,80 +4,34 @@ import { buildTireMfdData, tireTemperatureColor } from "@/features/telemetry/tir
 import { clampNumber } from "@/lib/math";
 import { MapControls } from "./MapControls";
 import { MapLegend } from "./MapLegend";
-import { buildCornerSegments, buildPathRenderSegments, buildSelectedCornerPhaseSegments, cornerSegmentForIndex, mapPathStrokeClass } from "./cornerAnalysis";
-import { CAR_FOLLOW_MAP_ZOOM, MAP_DRAG_THRESHOLD_PX, MAP_IMAGE_HEIGHT, MAP_IMAGE_URL, MAP_IMAGE_WIDTH, MAP_ZOOM_STEP, MAX_MAP_ZOOM, activeMapCalibration, buildPathGeometry, centerViewBoxAtPoint, clientPointToSvgPoint, defaultRunMapViewBox, mapMarkerScale, mapZoomPercent, nearestPointIndex, viewBoxCenter, worldTelemetryToMapPoint, zoomViewBoxAtPoint, clampMapViewBox } from "./mapGeometry";
+import { buildPathRenderSegments, mapPathStrokeClass } from "./cornerAnalysis";
+import { CAR_FOLLOW_MAP_ZOOM, MAP_DRAG_THRESHOLD_PX, MAP_IMAGE_HEIGHT, MAP_IMAGE_URL, MAP_IMAGE_WIDTH, MAP_ZOOM_STEP, MAX_MAP_ZOOM, buildPathGeometry, centerViewBoxAtPoint, clientPointToSvgPoint, defaultRunMapViewBox, mapMarkerScale, mapZoomPercent, nearestPointIndex, viewBoxCenter, zoomViewBoxAtPoint, clampMapViewBox } from "./mapGeometry";
 
-export function TrackMapPanel({
-  path,
-  hoverIndex,
-  hoverTelemetry,
-  playheadPathIndex,
-  playheadTelemetry,
-  isPlaying,
-  canPlayTelemetry,
-  playbackLabel,
-  playbackSpeed,
-  canDecreasePlaybackSpeed,
-  canIncreasePlaybackSpeed,
-  canReturnToLive,
-  onHoverIndex,
-  onScrubPathIndex,
-  onTogglePlayback,
-  onDecreasePlaybackSpeed,
-  onIncreasePlaybackSpeed,
-  onReturnToLive
-}: {
+export function TrackMapPanel({ path, scrubbingEnabled = true }: {
   path: PathSample[];
-  hoverIndex: number | null;
-  hoverTelemetry: Telemetry | null;
-  playheadPathIndex: number | null;
-  playheadTelemetry: Telemetry | null;
-  isPlaying: boolean;
-  canPlayTelemetry: boolean;
-  playbackLabel: string;
-  playbackSpeed: number;
-  canDecreasePlaybackSpeed: boolean;
-  canIncreasePlaybackSpeed: boolean;
-  canReturnToLive: boolean;
-  onHoverIndex: (index: number | null) => void;
-  onScrubPathIndex: (index: number | null) => void;
-  onTogglePlayback: () => void;
-  onDecreasePlaybackSpeed: () => void;
-  onIncreasePlaybackSpeed: () => void;
-  onReturnToLive: () => void;
+  scrubbingEnabled?: boolean;
 }) {
   const svgRef = React.useRef<SVGSVGElement | null>(null);
   const dragRef = React.useRef<MapDragState | null>(null);
   const lastScrubIndexRef = React.useRef<number | null>(null);
   const [viewBox, setViewBox] = React.useState<SvgViewBox>(() => defaultRunMapViewBox());
+  const [hoverIndex, setHoverIndex] = React.useState<number | null>(null);
+  const [scrubIndex, setScrubIndex] = React.useState<number | null>(null);
   const geometry = React.useMemo(() => buildPathGeometry(path), [path]);
-  const cornerSegments = React.useMemo(() => buildCornerSegments(path), [path]);
-  const playheadCorner = playheadPathIndex === null ? null : cornerSegmentForIndex(cornerSegments, playheadPathIndex);
   const renderSegments = React.useMemo(() => buildPathRenderSegments(path, geometry.points), [path, geometry.points]);
-  const playheadCornerSegments = React.useMemo(
-    () => playheadCorner ? buildSelectedCornerPhaseSegments(geometry.points, playheadCorner) : [],
-    [geometry.points, playheadCorner]
-  );
   const progressPolyline = React.useMemo(
     () => geometry.points
-      .slice(0, playheadPathIndex === null ? 0 : playheadPathIndex + 1)
+      .slice(0, scrubIndex === null ? 0 : scrubIndex + 1)
       .map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`)
       .join(" "),
-    [geometry.points, playheadPathIndex]
+    [geometry.points, scrubIndex]
   );
   const latestPoint = geometry.points[geometry.points.length - 1];
   const latestSample = path[path.length - 1];
-  const playheadPoint = playheadTelemetry && hasFinitePosition(playheadTelemetry)
-    ? worldTelemetryToMapPoint(playheadTelemetry, activeMapCalibration())
-    : null;
-  const currentPoint = playheadPoint ?? latestPoint;
-  const currentTelemetry = playheadTelemetry ?? latestSample?.telemetry ?? null;
+  const currentPoint = latestPoint;
+  const currentTelemetry = latestSample?.telemetry ?? null;
   const hoverPoint = hoverIndex === null ? null : geometry.points[hoverIndex];
-  const hoverSample = hoverIndex === null ? null : path[hoverIndex];
-  const resolvedHoverTelemetry = hoverTelemetry ?? hoverSample?.telemetry ?? null;
-  const hoverRotation = hoverIndex === null || resolvedHoverTelemetry
-    ? undefined
-    : pathTangentSvgDegrees(geometry.points, hoverIndex);
+  const scrubPoint = scrubIndex === null ? null : geometry.points[scrubIndex];
   const canZoomIn = viewBox.width > geometry.width / MAX_MAP_ZOOM;
   const canZoomOut = viewBox.width < geometry.width;
   const zoomPct = mapZoomPercent(viewBox);
@@ -109,7 +63,7 @@ export function TrackMapPanel({
       const deltaX = event.clientX - drag.startClientX;
       const deltaY = event.clientY - drag.startClientY;
 
-      if (drag.mode === "scrub") {
+      if (drag.mode === "scrub" && scrubbingEnabled) {
         event.preventDefault();
         const cursor = clientPointToSvgPoint(svgRef.current, event);
         if (cursor && geometry.points.length) {
@@ -124,7 +78,7 @@ export function TrackMapPanel({
 
       if (drag.dragging) {
         event.preventDefault();
-        onHoverIndex(null);
+        setHoverIndex(null);
         setViewBox(clampMapViewBox({
           ...drag.startViewBox,
           x: drag.startViewBox.x - deltaX * (drag.startViewBox.width / svgRef.current.clientWidth),
@@ -138,7 +92,7 @@ export function TrackMapPanel({
 
     const cursor = clientPointToSvgPoint(svgRef.current, event);
     if (!cursor) return;
-    onHoverIndex(nearestPathIndexWithinThreshold(geometry.points, cursor, scrubThresholdSvgUnits()));
+    setHoverIndex(nearestPathIndexWithinThreshold(geometry.points, cursor, scrubThresholdSvgUnits()));
   }
 
   function handlePointerDown(event: React.PointerEvent<SVGSVGElement>) {
@@ -146,7 +100,7 @@ export function TrackMapPanel({
 
     lastScrubIndexRef.current = null;
     const cursor = clientPointToSvgPoint(svgRef.current, event);
-    const scrubIndex = cursor ? nearestPathIndexWithinThreshold(geometry.points, cursor, scrubThresholdSvgUnits()) : null;
+    const scrubIndex = scrubbingEnabled && cursor ? nearestPathIndexWithinThreshold(geometry.points, cursor, scrubThresholdSvgUnits()) : null;
 
     dragRef.current = {
       pointerId: event.pointerId,
@@ -175,7 +129,7 @@ export function TrackMapPanel({
       lastScrubIndexRef.current = null;
       return;
     }
-    if (drag?.mode === "scrub") {
+    if (drag?.mode === "scrub" && scrubbingEnabled) {
       const cursor = clientPointToSvgPoint(svgRef.current, event);
       if (cursor) scrubToPathIndex(nearestPointIndex(geometry.points, cursor));
       lastScrubIndexRef.current = null;
@@ -187,7 +141,7 @@ export function TrackMapPanel({
       lastScrubIndexRef.current = null;
       return;
     }
-    scrubToPathIndex(nearestPointIndex(geometry.points, cursor));
+    if (scrubbingEnabled) scrubToPathIndex(nearestPointIndex(geometry.points, cursor));
     lastScrubIndexRef.current = null;
   }
 
@@ -218,8 +172,8 @@ export function TrackMapPanel({
   function scrubToPathIndex(index: number) {
     if (lastScrubIndexRef.current === index) return;
     lastScrubIndexRef.current = index;
-    onHoverIndex(null);
-    onScrubPathIndex(index);
+    setHoverIndex(null);
+    setScrubIndex(index);
   }
 
   function scrubThresholdSvgUnits() {
@@ -229,12 +183,12 @@ export function TrackMapPanel({
   }
 
   return (
-    <section className="flex h-full min-h-0 flex-col">
+    <section className="flex h-full min-h-0 overflow-hidden flex-col">
       <div
         data-path-surface
         className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border bg-card/80"
-        onMouseLeave={() => onHoverIndex(null)}
-        onPointerLeave={() => onHoverIndex(null)}
+        onMouseLeave={() => setHoverIndex(null)}
+        onPointerLeave={() => setHoverIndex(null)}
       >
         <svg
           className="block h-full w-full cursor-grab touch-none active:cursor-grabbing"
@@ -246,7 +200,7 @@ export function TrackMapPanel({
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerCancel}
-          onPointerLeave={() => onHoverIndex(null)}
+          onPointerLeave={() => setHoverIndex(null)}
           onWheel={handleWheel}
         >
           <image
@@ -271,29 +225,11 @@ export function TrackMapPanel({
                   points={segment.points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}
                 />
               ))}
-              {progressPolyline ? (
+              {scrubbingEnabled && progressPolyline ? (
                 <polyline
-                  className="pointer-events-none fill-none stroke-[#f5f7f6]/90 [stroke-linecap:round] [stroke-linejoin:round] [stroke-width:2.5] [vector-effect:non-scaling-stroke]"
+                  className="pointer-events-none fill-none stroke-[#f3d09b]/90 [stroke-linecap:round] [stroke-linejoin:round] [stroke-width:2.5] [vector-effect:non-scaling-stroke]"
                   points={progressPolyline}
                 />
-              ) : null}
-              {playheadCornerSegments.length ? (
-                <>
-                  <polyline
-                    className="pointer-events-none fill-none stroke-[#101312]/80 [stroke-linecap:round] [stroke-linejoin:round] [stroke-width:8] [vector-effect:non-scaling-stroke]"
-                    points={geometry.points.slice(playheadCorner!.startIndex, playheadCorner!.endIndex).map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}
-                  />
-                  {playheadCornerSegments.map((segment, index) => (
-                    <polyline
-                      key={`playhead-${segment.effect}-${index}`}
-                      className={[
-                        "pointer-events-none fill-none [stroke-linecap:round] [stroke-linejoin:round] [stroke-width:4.5] [vector-effect:non-scaling-stroke]",
-                        mapPathStrokeClass(segment.effect)
-                      ].join(" ")}
-                      points={segment.points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}
-                    />
-                  ))}
-                </>
               ) : null}
             </>
           ) : (
@@ -302,27 +238,19 @@ export function TrackMapPanel({
             </text>
           )}
           {hoverPoint ? (
-            <MfdCarMarker point={hoverPoint} telemetry={resolvedHoverTelemetry} fallbackRotation={hoverRotation} variant="hover" scale={markerScale} />
+            <MapScrubDot point={hoverPoint} variant="hover" scale={markerScale} />
           ) : null}
-          {currentPoint && currentTelemetry ? (
-            <MfdCarMarker point={currentPoint} telemetry={currentTelemetry} variant="selected" scale={markerScale} />
+          {scrubbingEnabled && scrubPoint ? (
+            <MapScrubDot point={scrubPoint} variant="scrub" scale={markerScale} />
+          ) : null}
+          {currentPoint ? (
+            <MfdCarMarker point={currentPoint} telemetry={currentTelemetry} scale={markerScale} />
           ) : null}
         </svg>
         <MapControls
           canZoomIn={canZoomIn}
           canZoomOut={canZoomOut}
-          canPlayTelemetry={canPlayTelemetry}
-          isPlaying={isPlaying}
           zoomPct={zoomPct}
-          playbackLabel={playbackLabel}
-          playbackSpeed={playbackSpeed}
-          canDecreasePlaybackSpeed={canDecreasePlaybackSpeed}
-          canIncreasePlaybackSpeed={canIncreasePlaybackSpeed}
-          canReturnToLive={canReturnToLive}
-          onTogglePlayback={onTogglePlayback}
-          onDecreasePlaybackSpeed={onDecreasePlaybackSpeed}
-          onIncreasePlaybackSpeed={onIncreasePlaybackSpeed}
-          onReturnToLive={onReturnToLive}
           onZoomIn={() => zoomMapFromSelectedPoint(1 / MAP_ZOOM_STEP)}
           onZoomOut={() => zoomMapFromSelectedPoint(MAP_ZOOM_STEP)}
           onReset={() => {
@@ -332,14 +260,10 @@ export function TrackMapPanel({
             );
           }}
         />
-        <MapLegend hasSelectedPoint={Boolean(playheadPoint)} hasSelectedCorner={Boolean(playheadCorner)} />
+        <MapLegend hasSelectedPoint={scrubbingEnabled && Boolean(scrubPoint)} hasSelectedCorner={false} />
       </div>
     </section>
   );
-}
-
-function hasFinitePosition(telemetry: Telemetry) {
-  return Number.isFinite(telemetry.PositionX) && Number.isFinite(telemetry.PositionZ);
 }
 
 function nearestPathIndexWithinThreshold(points: SvgPoint[], cursor: SvgPoint, threshold: number) {
@@ -380,32 +304,29 @@ function nearestPointOnSegment(cursor: SvgPoint, start: SvgPoint, end: SvgPoint)
   };
 }
 
-function pathTangentSvgDegrees(points: SvgPoint[], index: number) {
-  const start = points[Math.max(0, index - 1)] ?? points[index];
-  const end = points[Math.min(points.length - 1, index + 1)] ?? points[index];
-  if (!start || !end) return 0;
-
-  const deltaX = end.x - start.x;
-  const deltaY = end.y - start.y;
-  if (deltaX === 0 && deltaY === 0) return 0;
-
-  return (Math.atan2(deltaX, -deltaY) * 180) / Math.PI;
+function MapScrubDot({ point, variant, scale }: { point: SvgPoint; variant: "hover" | "scrub"; scale: number }) {
+  const isScrub = variant === "scrub";
+  return (
+    <g className="pointer-events-none" transform={`translate(${point.x} ${point.y}) scale(${scale})`}>
+      <circle
+        className={isScrub ? "fill-[#f3d09b]/20 stroke-[#f3d09b]" : "fill-[#63da97]/12 stroke-[#63da97]/75"}
+        r={isScrub ? 18 : 13}
+      />
+      <circle className={isScrub ? "fill-[#f3d09b]" : "fill-[#63da97]"} r={isScrub ? 5 : 3.5} />
+    </g>
+  );
 }
 
 function MfdCarMarker({
   point,
   telemetry,
-  fallbackRotation,
-  variant,
   scale
 }: {
   point: SvgPoint;
   telemetry: Telemetry | null;
-  fallbackRotation?: number;
-  variant: "current" | "hover" | "selected";
   scale: number;
 }) {
-  const rotation = telemetry ? yawToSvgDegrees(telemetry.Yaw) : fallbackRotation ?? 0;
+  const rotation = telemetry ? yawToSvgDegrees(telemetry.Yaw) : 0;
   const tires = buildTireMfdData(telemetry);
   const tireLayout = [
     { id: "front-left", x: -8, y: -12 },
@@ -413,15 +334,10 @@ function MfdCarMarker({
     { id: "rear-left", x: -8, y: 12 },
     { id: "rear-right", x: 8, y: 12 }
   ];
-  const ringClass = variant === "selected"
-    ? "fill-[#f3d09b]/12 stroke-[#f3d09b]/75"
-    : variant === "hover"
-      ? "fill-[#63da97]/12 stroke-[#63da97]/70"
-    : "fill-[#e46645]/12 stroke-[#e46645]/60";
 
   return (
     <g className="pointer-events-none" transform={`translate(${point.x} ${point.y}) rotate(${rotation}) scale(${scale})`}>
-      <circle className={`${ringClass} [stroke-width:1.5] [vector-effect:non-scaling-stroke]`} r={variant === "selected" ? 25 : variant === "hover" ? 23 : 21} />
+      <circle className="fill-[#e46645]/12 stroke-[#e46645]/60 [stroke-width:1.5] [vector-effect:non-scaling-stroke]" r={21} />
       <rect className="fill-[#101312]/85 stroke-[#f5f7f6]/45 [stroke-width:1.2] [vector-effect:non-scaling-stroke]" x="-7" y="-18" width="14" height="36" rx="4" />
       <path className="fill-[#f3d09b] stroke-[#101312] [stroke-linejoin:round] [stroke-width:1] [vector-effect:non-scaling-stroke]" d="M 0 -23 L 5 -15 L -5 -15 Z" />
       {tireLayout.map((layout) => {

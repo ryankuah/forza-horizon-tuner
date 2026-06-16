@@ -141,6 +141,7 @@ export type AppState = {
   udpPort: number;
   udpListening: boolean;
   runId?: string;
+  completedRunsVersion?: number;
 };
 
 export type PathSample = {
@@ -209,72 +210,95 @@ export type TireMfdTire = {
 export type TelemetryValue = number | string | null | undefined;
 export type TelemetryFieldName = Extract<keyof Telemetry, string>;
 export type DashboardTab = "car" | "corner" | "straights";
-export type RunSelection = "live" | string;
-export type CarSessionSummary = {
-  id: string;
-  startedAt: number;
-  lastPacketAt: number | null;
-  endedAt: number | null;
-  runCount: number;
-  packetCount: number;
-  badPacketCount: number;
-  carOrdinal: number | null;
-  carClass: number | null;
-  carPerformanceIndex: number | null;
-  drivetrainType: number | null;
-  runs: RunSummary[];
+export type AppPage = "live" | "runs" | "cars";
+export type RunTelemetrySet = {
+  runId: string;
+  label: string;
+  samples: Telemetry[];
 };
+export type RunType = "freeroam" | "event";
+export type RunStatus = "active" | "completed";
 export type RunSummary = {
   id: string;
-  carSessionId: string;
+  status: RunStatus;
+  runType: RunType;
   startedAt: number;
   lastPacketAt: number | null;
   endedAt: number | null;
   packetCount: number;
-  badPacketCount: number;
   lastSource: string | null;
   splitReason: string | null;
+  endReason: string | null;
   carOrdinal: number | null;
   carClass: number | null;
   carPerformanceIndex: number | null;
   drivetrainType: number | null;
+  numCylinders: number | null;
+  carGroup: number | null;
+  pathPointCount: number;
+  summary: Summary | null;
 };
 export type RunDetail = {
   run: RunSummary;
   path: PathSample[];
-  samples: Telemetry[];
   sampleWindow: RunSampleWindow;
-  powerBand: PowerBandEstimate | null;
-  summary: Summary | null;
 };
 export type RunSampleWindow = {
   start: number;
   total: number;
   samples: Telemetry[];
 };
-export type RunTelemetrySet = {
+export type RunsPage = {
+  runs: RunSummary[];
+  nextCursor: string | null;
+  previousCursor: string | null;
+  hasNextPage: boolean;
+  hasPreviousPage: boolean;
+};
+export type RunsPageQuery = {
+  cursor?: string | null;
+  direction?: "next" | "previous";
+  limit?: number;
+};
+export type RunSampleWindowQuery = {
   runId: string;
-  label: string;
+  start?: number;
+  limit?: number;
+};
+export type RunSectionType = "corner" | "straight";
+export type RunSection = {
+  id: string;
+  runId: string;
+  type: RunSectionType;
+  index: number;
+  sampleStart: number;
+  sampleEnd: number;
+  distanceMeters: number;
+  durationMs: number;
+  metrics: Record<string, number | string>;
+  previewPath: Omit<PathSample, "telemetry">[];
+};
+export type RunSectionPage = {
+  runId: string;
+  type: RunSectionType;
+  page: number;
+  limit: number;
+  total: number;
+  sections: RunSection[];
+};
+export type RunSectionPageQuery = {
+  runId: string;
+  type: RunSectionType;
+  page?: number;
+  limit?: number;
+};
+export type RunSectionSamples = {
+  section: RunSection;
   samples: Telemetry[];
 };
-export type PowerBandBin = {
-  rpm: number;
-  sampleCount: number;
-  avgPowerHp: number;
-  avgTorqueNm: number;
-  avgBoost: number;
-};
-export type PowerBandEstimate = {
-  bins: PowerBandBin[];
-  sampleCount: number;
-  peakPowerHp: number;
-  peakPowerRpm: number;
-  peakTorqueNm: number;
-  peakTorqueRpm: number;
-  bandStartRpm: number;
-  bandEndRpm: number;
-  thresholdPercent: number;
-  confidence: "Low" | "Medium" | "High";
+export type RunSectionSamplesQuery = {
+  runId: string;
+  sectionId: string;
 };
 export type CarCatalogSortKey =
   | "make"
@@ -357,5 +381,6 @@ export const emptyState: AppState = {
   telemetry: null,
   summary: null,
   udpPort: 9999,
-  udpListening: false
+  udpListening: false,
+  completedRunsVersion: 0
 };

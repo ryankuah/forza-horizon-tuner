@@ -41,9 +41,7 @@ const AXLE_COLORS = {
   right: "#76a9ff"
 } as const;
 const GRAPH_WINDOW_SIZE = 3000;
-const MIN_GRAPH_WINDOW_SIZE = 250;
-const MAX_GRAPH_WINDOW_SIZE = 20000;
-const GRAPH_ZOOM_FACTOR = 1.18;
+const GRAPH_PLAYHEAD_RATIO = 0.75;
 
 const graphTelemetrySections: TelemetryGraphSection[] = [
   {
@@ -156,19 +154,21 @@ export function TelemetrySidePanel({
   samples,
   sampleOffset,
   currentSampleIndex,
-  hoverSampleIndex,
   mode,
   onModeChange,
+  showModeToggle = true,
+  hoverSampleIndex = null,
   onGraphHoverIndex
 }: {
   telemetry: Telemetry | null;
   samples: Telemetry[];
   sampleOffset: number;
   currentSampleIndex: number | null;
-  hoverSampleIndex: number | null;
   mode: TelemetrySidePanelMode;
   onModeChange: (mode: TelemetrySidePanelMode) => void;
-  onGraphHoverIndex: (index: number | null) => void;
+  showModeToggle?: boolean;
+  hoverSampleIndex?: number | null;
+  onGraphHoverIndex?: (index: number | null) => void;
 }) {
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col gap-3 bg-transparent p-2" aria-label="Telemetry details">
@@ -179,6 +179,7 @@ export function TelemetrySidePanel({
             {mode === "live" ? "Current packet view" : `${samples.length.toLocaleString()} samples over time`}
           </p>
         </div>
+        {showModeToggle ? (
         <div className="flex shrink-0 rounded-lg border border-white/10 bg-white/[0.03] p-0.5" aria-label="Telemetry view">
           <Button
             type="button"
@@ -203,6 +204,7 @@ export function TelemetrySidePanel({
             Graph
           </Button>
         </div>
+        ) : null}
       </div>
 
       <div className="min-h-0 min-w-0 flex-1">
@@ -236,26 +238,20 @@ function TelemetryGraphPanel({
   sampleOffset: number;
   currentSampleIndex: number | null;
   hoverSampleIndex: number | null;
-  onGraphHoverIndex: (index: number | null) => void;
+  onGraphHoverIndex?: (index: number | null) => void;
 }) {
-  const [windowStart, setWindowStart] = React.useState(0);
-  const [windowSize, setWindowSize] = React.useState(GRAPH_WINDOW_SIZE);
-  const dragRef = React.useRef<{ pointerId: number; lastClientX: number; width: number } | null>(null);
-  const effectiveWindowSize = Math.min(samples.length || windowSize, windowSize);
-  const maxWindowStart = Math.max(0, samples.length - effectiveWindowSize);
-  const clampedWindowStart = Math.min(windowStart, maxWindowStart);
-  const windowEnd = Math.min(samples.length, clampedWindowStart + effectiveWindowSize);
-  const plottedSamples = samples.length > 0 ? samples.slice(clampedWindowStart, windowEnd) : telemetry ? [telemetry] : [];
-
-  React.useEffect(() => {
-    setWindowSize((current) => clampIndex(current, MIN_GRAPH_WINDOW_SIZE, Math.max(MIN_GRAPH_WINDOW_SIZE, Math.min(MAX_GRAPH_WINDOW_SIZE, samples.length || GRAPH_WINDOW_SIZE))));
-    setWindowStart((current) => Math.min(current, Math.max(0, samples.length - effectiveWindowSize)));
-  }, [effectiveWindowSize, samples.length]);
-
-  React.useEffect(() => {
-    if (currentSampleIndex === null) return;
-    setWindowStart(clampIndex(currentSampleIndex - sampleOffset - Math.floor(effectiveWindowSize / 2), 0, maxWindowStart));
-  }, [currentSampleIndex, effectiveWindowSize, maxWindowStart, sampleOffset]);
+  const graphWindow = React.useMemo(
+    () => pinnedGraphWindow(samples, sampleOffset, currentSampleIndex, GRAPH_WINDOW_SIZE),
+    [currentSampleIndex, sampleOffset, samples]
+  );
+  const plottedSamples = samples.length > 0
+    ? samples.slice(graphWindow.sliceStart, graphWindow.sliceEnd)
+    : telemetry ? [telemetry] : [];
+  const plottedSampleOffset = sampleOffset + graphWindow.sliceStart;
+  const currentSample = sampleAtAbsoluteIndex(samples, sampleOffset, graphWindow.currentIndex);
+  const windowLabel = samples.length > 0
+    ? `${(graphWindow.sliceStart + 1).toLocaleString()}-${graphWindow.sliceEnd.toLocaleString()} / ${samples.length.toLocaleString()}`
+    : `${plottedSamples.length.toLocaleString()} samples`;
 
   if (plottedSamples.length === 0) {
     return (
@@ -269,60 +265,6 @@ function TelemetryGraphPanel({
     );
   }
 
-  function scrollGraphWindow(delta: number) {
-    if (samples.length <= effectiveWindowSize && delta > 0) return;
-    setWindowStart((current) => clampIndex(current + delta, 0, maxWindowStart));
-  }
-
-  function zoomGraphWindow(deltaY: number) {
-    if (samples.length <= MIN_GRAPH_WINDOW_SIZE) return;
-
-    const centerIndex = clampedWindowStart + effectiveWindowSize / 2;
-    const zoomFactor = deltaY > 0 ? GRAPH_ZOOM_FACTOR : 1 / GRAPH_ZOOM_FACTOR;
-    const maxWindowSize = Math.max(MIN_GRAPH_WINDOW_SIZE, Math.min(MAX_GRAPH_WINDOW_SIZE, samples.length));
-    const nextWindowSize = clampIndex(Math.round(effectiveWindowSize * zoomFactor), MIN_GRAPH_WINDOW_SIZE, maxWindowSize);
-    const nextMaxWindowStart = Math.max(0, samples.length - nextWindowSize);
-
-    setWindowSize(nextWindowSize);
-    setWindowStart(clampIndex(Math.round(centerIndex - nextWindowSize / 2), 0, nextMaxWindowStart));
-  }
-
-  function handleChartPointerDown(event: React.PointerEvent<SVGSVGElement>) {
-    dragRef.current = {
-      pointerId: event.pointerId,
-      lastClientX: event.clientX,
-      width: Math.max(1, event.currentTarget.getBoundingClientRect().width)
-    };
-    event.currentTarget.setPointerCapture(event.pointerId);
-  }
-
-  function handleChartPointerMove(event: React.PointerEvent<SVGSVGElement>, width: number) {
-    const drag = dragRef.current;
-    if (drag?.pointerId === event.pointerId) {
-      event.preventDefault();
-      const deltaX = event.clientX - drag.lastClientX;
-      drag.lastClientX = event.clientX;
-      drag.width = Math.max(1, event.currentTarget.getBoundingClientRect().width);
-      const deltaSamples = Math.round((-deltaX / drag.width) * effectiveWindowSize);
-      if (deltaSamples !== 0) scrollGraphWindow(deltaSamples);
-      return;
-    }
-
-    onGraphHoverIndex(pointerSampleIndex(event, sampleOffset + clampedWindowStart, plottedSamples.length, width));
-  }
-
-  function handleChartPointerEnd(event: React.PointerEvent<SVGSVGElement>) {
-    if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  }
-
-  function handleChartWheel(event: React.WheelEvent<SVGSVGElement>) {
-    event.preventDefault();
-    zoomGraphWindow(event.deltaY || event.deltaX);
-  }
-
   return (
     <ScrollArea className="h-full min-h-0">
       <div className="grid min-w-0 gap-5 pr-3">
@@ -330,25 +272,9 @@ function TelemetryGraphPanel({
           <div className="flex min-w-0 items-center justify-between gap-3">
             <span className="min-w-0 truncate text-xs font-black text-[#f5f7f6]">Graph window</span>
             <span className="shrink-0 text-[10px] font-bold uppercase text-[#66736d]">
-              {samples.length > 0
-                ? `${(clampedWindowStart + 1).toLocaleString()}-${windowEnd.toLocaleString()} / ${samples.length.toLocaleString()} (${effectiveWindowSize.toLocaleString()} visible)`
-                : `${plottedSamples.length.toLocaleString()} samples`}
+              {windowLabel} / playhead pinned
             </span>
           </div>
-          {samples.length > effectiveWindowSize ? (
-            <input
-              className="h-2 w-full accent-[#63da97]"
-              type="range"
-              min={0}
-              max={maxWindowStart}
-              step={Math.max(1, Math.floor(effectiveWindowSize / 4))}
-              value={clampedWindowStart}
-              onChange={(event) => {
-                setWindowStart(Number(event.currentTarget.value));
-              }}
-              aria-label="Graph sample window"
-            />
-          ) : null}
         </div>
         {graphTelemetrySections.map((section) => (
           <section key={section.title} className="grid min-w-0 gap-2">
@@ -362,13 +288,12 @@ function TelemetryGraphPanel({
                   key={group.title}
                   group={group}
                   samples={plottedSamples}
-                  sampleOffset={sampleOffset + clampedWindowStart}
-                  currentSampleIndex={currentSampleIndex}
+                  sampleOffset={plottedSampleOffset}
+                  domainStart={graphWindow.domainStart}
+                  domainEnd={graphWindow.domainEnd}
+                  currentSampleIndex={graphWindow.currentIndex}
                   hoverSampleIndex={hoverSampleIndex}
-                  onGraphPointerDown={handleChartPointerDown}
-                  onGraphPointerMove={handleChartPointerMove}
-                  onGraphPointerEnd={handleChartPointerEnd}
-                  onGraphWheel={handleChartWheel}
+                  currentSample={currentSample}
                   onGraphHoverIndex={onGraphHoverIndex}
                 />
               ))}
@@ -377,13 +302,12 @@ function TelemetryGraphPanel({
                   key={field.name}
                   field={field}
                   samples={plottedSamples}
-                  sampleOffset={sampleOffset + clampedWindowStart}
-                  currentSampleIndex={currentSampleIndex}
+                  sampleOffset={plottedSampleOffset}
+                  domainStart={graphWindow.domainStart}
+                  domainEnd={graphWindow.domainEnd}
+                  currentSampleIndex={graphWindow.currentIndex}
                   hoverSampleIndex={hoverSampleIndex}
-                  onGraphPointerDown={handleChartPointerDown}
-                  onGraphPointerMove={handleChartPointerMove}
-                  onGraphPointerEnd={handleChartPointerEnd}
-                  onGraphWheel={handleChartWheel}
+                  currentSample={currentSample}
                   onGraphHoverIndex={onGraphHoverIndex}
                 />
               ))}
@@ -399,24 +323,22 @@ function TelemetryMultiLineChart({
   group,
   samples,
   sampleOffset,
+  domainStart,
+  domainEnd,
   currentSampleIndex,
   hoverSampleIndex,
-  onGraphPointerDown,
-  onGraphPointerMove,
-  onGraphPointerEnd,
-  onGraphWheel,
+  currentSample,
   onGraphHoverIndex
 }: {
   group: TelemetryChartGroup;
   samples: Telemetry[];
   sampleOffset: number;
+  domainStart: number;
+  domainEnd: number;
   currentSampleIndex: number | null;
   hoverSampleIndex: number | null;
-  onGraphPointerDown: (event: React.PointerEvent<SVGSVGElement>) => void;
-  onGraphPointerMove: (event: React.PointerEvent<SVGSVGElement>, width: number) => void;
-  onGraphPointerEnd: (event: React.PointerEvent<SVGSVGElement>) => void;
-  onGraphWheel: (event: React.WheelEvent<SVGSVGElement>) => void;
-  onGraphHoverIndex: (index: number | null) => void;
+  currentSample: Telemetry | null;
+  onGraphHoverIndex?: (index: number | null) => void;
 }) {
   const series = React.useMemo(
     () => group.series.map((definition) => ({
@@ -429,11 +351,15 @@ function TelemetryMultiLineChart({
     () => valueRange(series.flatMap((item) => item.values.map((point) => point.value))),
     [series]
   );
-  const firstIndex = sampleOffset;
-  const lastIndex = sampleOffset + samples.length - 1;
-  const currentX = indicatorX(currentSampleIndex, firstIndex, lastIndex, 320);
-  const hoverX = indicatorX(hoverSampleIndex, firstIndex, lastIndex, 320);
-  const hoverSample = sampleAtAbsoluteIndex(samples, sampleOffset, hoverSampleIndex);
+  const currentX = indicatorX(currentSampleIndex, domainStart, domainEnd, 320);
+  const hoverX = indicatorX(hoverSampleIndex, domainStart, domainEnd, 320);
+
+  function handlePointerMove(event: React.PointerEvent<SVGSVGElement>) {
+    if (!onGraphHoverIndex) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const xRatio = clampNumber((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1);
+    onGraphHoverIndex(Math.round(domainStart + xRatio * Math.max(1, domainEnd - domainStart)));
+  }
 
   return (
     <div className="grid min-h-[156px] min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] border border-white/[0.07] bg-[#101312] p-2.5">
@@ -442,21 +368,17 @@ function TelemetryMultiLineChart({
         <span className="shrink-0 text-[10px] font-bold uppercase text-[#66736d]">{samples.length.toLocaleString()} samples</span>
       </div>
       <svg
-        className="h-[82px] w-full min-w-0 cursor-ew-resize overflow-visible py-1"
+        className="h-[82px] w-full min-w-0 overflow-visible py-1"
         viewBox="0 0 320 82"
         preserveAspectRatio="none"
         role="img"
         aria-label={`${group.title} over time`}
-        onPointerDown={onGraphPointerDown}
-        onPointerMove={(event) => onGraphPointerMove(event, 320)}
-        onPointerUp={onGraphPointerEnd}
-        onPointerCancel={onGraphPointerEnd}
-        onWheel={onGraphWheel}
-        onPointerLeave={() => onGraphHoverIndex(null)}
+        onPointerMove={handlePointerMove}
+        onPointerLeave={() => onGraphHoverIndex?.(null)}
       >
         <path d="M0 69 H320 M0 41 H320 M0 13 H320" className="stroke-white/[0.06] [stroke-width:1]" />
         {series.map((item) => {
-          const path = chartPath(item.values, range.min, range.max, 320, 82);
+          const path = chartPath(item.values, range.min, range.max, 320, 82, domainStart, domainEnd);
           return path ? (
             <path
               key={item.definition.id}
@@ -474,13 +396,13 @@ function TelemetryMultiLineChart({
           <path d={`M${currentX.toFixed(2)} 5 V77`} className="stroke-[#f3d09b]/85 [stroke-width:1.5]" vectorEffect="non-scaling-stroke" />
         ) : null}
         {hoverX !== null ? (
-          <path d={`M${hoverX.toFixed(2)} 5 V77`} className="stroke-[#f5f7f6]/80 [stroke-dasharray:4_3] [stroke-width:1.2]" vectorEffect="non-scaling-stroke" />
+          <path d={`M${hoverX.toFixed(2)} 5 V77`} className="stroke-[#f5f7f6]/80 [stroke-dasharray:4_4] [stroke-width:1.5]" vectorEffect="non-scaling-stroke" />
         ) : null}
       </svg>
       <div className="grid min-w-0 grid-cols-1 gap-x-3 gap-y-1 text-[10px] font-bold sm:grid-cols-2">
         {series.map((item) => {
-          const displayValue = hoverSample
-            ? telemetryValue(hoverSample, item.definition.value)
+          const displayValue = currentSample
+            ? telemetryValue(currentSample, item.definition.value)
             : item.values.at(-1)?.value;
           return (
             <div key={item.definition.id} className="flex min-w-0 items-center justify-between gap-2">
@@ -503,41 +425,43 @@ function TelemetrySparkline({
   field,
   samples,
   sampleOffset,
+  domainStart,
+  domainEnd,
   currentSampleIndex,
   hoverSampleIndex,
-  onGraphPointerDown,
-  onGraphPointerMove,
-  onGraphPointerEnd,
-  onGraphWheel,
+  currentSample,
   onGraphHoverIndex
 }: {
   field: DocTelemetryField;
   samples: Telemetry[];
   sampleOffset: number;
+  domainStart: number;
+  domainEnd: number;
   currentSampleIndex: number | null;
   hoverSampleIndex: number | null;
-  onGraphPointerDown: (event: React.PointerEvent<SVGSVGElement>) => void;
-  onGraphPointerMove: (event: React.PointerEvent<SVGSVGElement>, width: number) => void;
-  onGraphPointerEnd: (event: React.PointerEvent<SVGSVGElement>) => void;
-  onGraphWheel: (event: React.WheelEvent<SVGSVGElement>) => void;
-  onGraphHoverIndex: (index: number | null) => void;
+  currentSample: Telemetry | null;
+  onGraphHoverIndex?: (index: number | null) => void;
 }) {
   const values = React.useMemo(() => buildSeries(samples, field.name, sampleOffset), [field.name, sampleOffset, samples]);
-  const hoverSample = sampleAtAbsoluteIndex(samples, sampleOffset, hoverSampleIndex);
-  const latest = hoverSample ? telemetryValue(hoverSample, field.name) : values.at(-1)?.value;
+  const latest = currentSample ? telemetryValue(currentSample, field.name) : values.at(-1)?.value;
   const range = React.useMemo(() => valueRange(values.map((item) => item.value)), [values]);
-  const path = React.useMemo(() => chartPath(values, range.min, range.max, 220, 54), [range.max, range.min, values]);
+  const path = React.useMemo(() => chartPath(values, range.min, range.max, 220, 54, domainStart, domainEnd), [domainEnd, domainStart, range.max, range.min, values]);
   const isFlat = range.max === range.min;
-  const firstIndex = sampleOffset;
-  const lastIndex = sampleOffset + samples.length - 1;
-  const currentX = indicatorX(currentSampleIndex, firstIndex, lastIndex, 220);
-  const hoverX = indicatorX(hoverSampleIndex, firstIndex, lastIndex, 220);
+  const currentX = indicatorX(currentSampleIndex, domainStart, domainEnd, 220);
+  const hoverX = indicatorX(hoverSampleIndex, domainStart, domainEnd, 220);
   const gearShiftBadges = React.useMemo(
     () => field.name === "CurrentEngineRpm"
-      ? buildGearShiftBadges(samples, sampleOffset, range.min, range.max, 220, 54)
+      ? buildGearShiftBadges(samples, sampleOffset, range.min, range.max, 220, 54, domainStart, domainEnd)
       : [],
-    [field.name, range.max, range.min, sampleOffset, samples]
+    [domainEnd, domainStart, field.name, range.max, range.min, sampleOffset, samples]
   );
+
+  function handlePointerMove(event: React.PointerEvent<SVGSVGElement>) {
+    if (!onGraphHoverIndex) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const xRatio = clampNumber((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1);
+    onGraphHoverIndex(Math.round(domainStart + xRatio * Math.max(1, domainEnd - domainStart)));
+  }
 
   return (
     <div className="grid min-h-[86px] min-w-0 grid-rows-[auto_minmax(0,1fr)] border border-white/[0.07] bg-[#101312] p-2">
@@ -548,17 +472,13 @@ function TelemetrySparkline({
         </span>
       </div>
       <svg
-        className="h-[54px] w-full min-w-0 cursor-ew-resize overflow-visible"
+        className="h-[54px] w-full min-w-0 overflow-visible"
         viewBox="0 0 220 54"
         preserveAspectRatio="none"
         role="img"
         aria-label={`${field.label} over time`}
-        onPointerDown={onGraphPointerDown}
-        onPointerMove={(event) => onGraphPointerMove(event, 220)}
-        onPointerUp={onGraphPointerEnd}
-        onPointerCancel={onGraphPointerEnd}
-        onWheel={onGraphWheel}
-        onPointerLeave={() => onGraphHoverIndex(null)}
+        onPointerMove={handlePointerMove}
+        onPointerLeave={() => onGraphHoverIndex?.(null)}
       >
         <path d="M0 45 H220 M0 27 H220 M0 9 H220" className="stroke-white/[0.06] [stroke-width:1]" />
         {path ? (
@@ -593,7 +513,7 @@ function TelemetrySparkline({
           <path d={`M${currentX.toFixed(2)} 4 V50`} className="stroke-[#f3d09b]/85 [stroke-width:1.5]" vectorEffect="non-scaling-stroke" />
         ) : null}
         {hoverX !== null ? (
-          <path d={`M${hoverX.toFixed(2)} 4 V50`} className="stroke-[#f5f7f6]/80 [stroke-dasharray:4_3] [stroke-width:1.2]" vectorEffect="non-scaling-stroke" />
+          <path d={`M${hoverX.toFixed(2)} 4 V50`} className="stroke-[#f5f7f6]/80 [stroke-dasharray:4_4] [stroke-width:1.5]" vectorEffect="non-scaling-stroke" />
         ) : null}
       </svg>
       <div className="flex items-center justify-between text-[10px] font-bold tabular-nums text-[#66736d]">
@@ -644,25 +564,21 @@ function valueRange(values: number[]) {
   return { min, max };
 }
 
-function chartPath(series: SeriesPoint[], min: number, max: number, width: number, height: number) {
+function chartPath(series: SeriesPoint[], min: number, max: number, width: number, height: number, domainStart: number, domainEnd: number) {
   if (series.length === 0) return "";
   const paddingY = 7;
-  const lastIndex = series.at(-1)?.index ?? 0;
-  const firstIndex = series[0]?.index ?? 0;
-  const indexSpan = Math.max(1, lastIndex - firstIndex);
+  const indexSpan = Math.max(1, domainEnd - domainStart);
   const valueSpan = Math.max(1, max - min);
 
   return series.map((point, pointIndex) => {
-    const x = ((point.index - firstIndex) / indexSpan) * width;
+    const x = ((point.index - domainStart) / indexSpan) * width;
     const normalizedValue = (point.value - min) / valueSpan;
     const y = height - paddingY - normalizedValue * (height - paddingY * 2);
     return `${pointIndex === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`;
   }).join(" ");
 }
 
-function buildGearShiftBadges(samples: Telemetry[], sampleOffset: number, min: number, max: number, width: number, height: number) {
-  const firstIndex = sampleOffset;
-  const lastIndex = sampleOffset + samples.length - 1;
+function buildGearShiftBadges(samples: Telemetry[], sampleOffset: number, min: number, max: number, width: number, height: number, domainStart: number, domainEnd: number) {
   const badges: GearShiftBadge[] = [];
   let previousGear: number | null = null;
   let lastBadgeX = -Infinity;
@@ -673,7 +589,7 @@ function buildGearShiftBadges(samples: Telemetry[], sampleOffset: number, min: n
 
     if (previousGear !== null && gear !== previousGear) {
       const absoluteIndex = sampleOffset + index;
-      const x = indicatorX(absoluteIndex, firstIndex, lastIndex, width);
+      const x = indicatorX(absoluteIndex, domainStart, domainEnd, width);
       const rpm = telemetryValue(sample, "CurrentEngineRpm");
       if (x !== null && typeof rpm === "number" && Number.isFinite(rpm) && x - lastBadgeX >= 14) {
         const label = formatGear(gear);
@@ -703,18 +619,10 @@ function chartY(value: number, min: number, max: number, height: number) {
   return height - paddingY - normalizedValue * (height - paddingY * 2);
 }
 
-function pointerSampleIndex(event: React.PointerEvent<SVGSVGElement>, sampleOffset: number, sampleCount: number, width: number) {
-  if (sampleCount <= 0) return null;
-
-  const rect = event.currentTarget.getBoundingClientRect();
-  const ratio = clampIndex(Math.round(((event.clientX - rect.left) / Math.max(rect.width, 1)) * width), 0, width) / width;
-  return sampleOffset + Math.min(sampleCount - 1, Math.max(0, Math.round(ratio * (sampleCount - 1))));
-}
-
-function indicatorX(index: number | null, firstIndex: number, lastIndex: number, width: number) {
-  if (index === null || index < firstIndex || index > lastIndex) return null;
-  const span = Math.max(1, lastIndex - firstIndex);
-  return ((index - firstIndex) / span) * width;
+function indicatorX(index: number | null, domainStart: number, domainEnd: number, width: number) {
+  if (index === null || index < domainStart || index > domainEnd) return null;
+  const span = Math.max(1, domainEnd - domainStart);
+  return ((index - domainStart) / span) * width;
 }
 
 function sampleAtAbsoluteIndex(samples: Telemetry[], sampleOffset: number, index: number | null) {
@@ -722,12 +630,27 @@ function sampleAtAbsoluteIndex(samples: Telemetry[], sampleOffset: number, index
   return samples[index - sampleOffset] ?? null;
 }
 
-function clampIndex(value: number, min: number, max: number) {
+function clampNumber(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function clampNumber(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
+function pinnedGraphWindow(samples: Telemetry[], sampleOffset: number, currentSampleIndex: number | null, windowSize: number) {
+  const sampleCount = samples.length;
+  const fallbackCurrentIndex = sampleCount > 0 ? sampleOffset + sampleCount - 1 : sampleOffset;
+  const currentIndex = currentSampleIndex ?? fallbackCurrentIndex;
+  const historyCount = Math.floor(windowSize * GRAPH_PLAYHEAD_RATIO);
+  const domainStart = currentIndex - historyCount;
+  const domainEnd = domainStart + windowSize - 1;
+  const sliceStart = clampNumber(domainStart - sampleOffset, 0, sampleCount);
+  const sliceEnd = clampNumber(domainEnd - sampleOffset + 1, sliceStart, sampleCount);
+
+  return {
+    currentIndex,
+    domainStart,
+    domainEnd,
+    sliceStart,
+    sliceEnd
+  };
 }
 
 function sectionCount(section: TelemetryGraphSection) {
