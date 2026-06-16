@@ -249,10 +249,6 @@ function TelemetryGraphPanel({
     : telemetry ? [telemetry] : [];
   const plottedSampleOffset = sampleOffset + graphWindow.sliceStart;
   const currentSample = sampleAtAbsoluteIndex(samples, sampleOffset, graphWindow.currentIndex);
-  const windowLabel = samples.length > 0
-    ? `${(graphWindow.sliceStart + 1).toLocaleString()}-${graphWindow.sliceEnd.toLocaleString()} / ${samples.length.toLocaleString()}`
-    : `${plottedSamples.length.toLocaleString()} samples`;
-
   if (plottedSamples.length === 0) {
     return (
       <div className="flex h-full min-h-[240px] items-center justify-center border border-dashed border-white/10 bg-white/[0.02] p-6 text-center">
@@ -268,14 +264,6 @@ function TelemetryGraphPanel({
   return (
     <ScrollArea className="h-full min-h-0">
       <div className="grid min-w-0 gap-5 pr-3">
-        <div className="grid gap-2 border border-white/[0.07] bg-[#101312] p-2.5">
-          <div className="flex min-w-0 items-center justify-between gap-3">
-            <span className="min-w-0 truncate text-xs font-black text-[#f5f7f6]">Graph window</span>
-            <span className="shrink-0 text-[10px] font-bold uppercase text-[#66736d]">
-              {windowLabel} / playhead pinned
-            </span>
-          </div>
-        </div>
         {graphTelemetrySections.map((section) => (
           <section key={section.title} className="grid min-w-0 gap-2">
             <div className="flex min-w-0 items-center justify-between gap-3">

@@ -1,7 +1,9 @@
 import * as React from "react";
-import { fetchRunsPage, invalidateRunCaches } from "@/services/api";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import { fetchRunsPage, queryKeys } from "@/services/api";
 import type { RunsPage, RunSummary } from "@/types/telemetry";
 
+const RUNS_PAGE_LIMIT = 50;
 const EMPTY_RUNS_PAGE: RunsPage = {
   runs: [],
   nextCursor: null,
@@ -12,73 +14,63 @@ const EMPTY_RUNS_PAGE: RunsPage = {
 
 type PageRequest = {
   cursor: string | null;
-  direction: "next" | "previous";
+  direction: "next";
 };
 
 export function useRuns(completedRunsVersion = 0) {
-  const [runsPage, setRunsPage] = React.useState<RunsPage>(EMPTY_RUNS_PAGE);
+  const queryClient = useQueryClient();
   const [selectedRunId, setSelectedRunId] = React.useState<string | null>(null);
-  const [pageRequest, setPageRequest] = React.useState<PageRequest | null>({ cursor: null, direction: "next" });
-  const [isRunsLoading, setIsRunsLoading] = React.useState(false);
-  const [runsError, setRunsError] = React.useState<string | null>(null);
+  const initialPageParam = React.useMemo<PageRequest>(() => ({ cursor: null, direction: "next" }), []);
+
+  const loadPage = React.useCallback((request: PageRequest) => {
+    const query = { cursor: request.cursor, direction: request.direction, limit: RUNS_PAGE_LIMIT };
+    return queryClient.ensureQueryData({
+      queryKey: queryKeys.runs.page(query),
+      queryFn: () => fetchRunsPage(query)
+    });
+  }, [queryClient]);
+
+  const runsQuery = useInfiniteQuery({
+    queryKey: queryKeys.runs.pages(RUNS_PAGE_LIMIT, completedRunsVersion),
+    queryFn: ({ pageParam }: { pageParam: PageRequest }) => loadPage(pageParam),
+    initialPageParam,
+    getNextPageParam: (lastPage) => lastPage.hasNextPage && lastPage.nextCursor
+      ? { cursor: lastPage.nextCursor, direction: "next" as const }
+      : undefined
+  });
+
+  const runsPage = React.useMemo(() => {
+    return runsQuery.data?.pages.reduce<RunsPage>((current, page, index) => {
+      return mergeRunsPage(current, page, index === 0);
+    }, EMPTY_RUNS_PAGE) ?? EMPTY_RUNS_PAGE;
+  }, [runsQuery.data]);
 
   React.useEffect(() => {
-    invalidateRunCaches();
-    setRunsPage(EMPTY_RUNS_PAGE);
-    setPageRequest({ cursor: null, direction: "next" });
-  }, [completedRunsVersion]);
+    setSelectedRunId((current) => selectValidRun(current, runsPage.runs));
+  }, [runsPage.runs]);
 
   React.useEffect(() => {
-    if (!pageRequest) return;
-    let cancelled = false;
-    setIsRunsLoading(true);
-    setRunsError(null);
-
-    fetchRunsPage({
-      cursor: pageRequest.cursor,
-      direction: pageRequest.direction,
-      limit: 50
-      })
-      .then((page) => {
-        if (cancelled) return;
-        setRunsPage((current) => {
-          const next = mergeRunsPage(current, page, pageRequest.cursor === null);
-          setSelectedRunId((selectedRunId) => selectValidRun(selectedRunId, next.runs));
-          return next;
-        });
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        setRunsError(error instanceof Error ? error.message : String(error));
-        setRunsPage(EMPTY_RUNS_PAGE);
-      })
-      .finally(() => {
-        if (!cancelled) setIsRunsLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [pageRequest]);
+    const lastPage = runsQuery.data?.pages.at(-1);
+    if (!lastPage?.nextCursor || !lastPage.hasNextPage) return;
+    const query = { cursor: lastPage.nextCursor, direction: "next" as const, limit: RUNS_PAGE_LIMIT };
+    void queryClient.prefetchQuery({
+      queryKey: queryKeys.runs.page(query),
+      queryFn: () => fetchRunsPage(query)
+    });
+  }, [queryClient, runsQuery.data]);
 
   function loadNextPage() {
-    if (isRunsLoading || !runsPage.nextCursor || !runsPage.hasNextPage) return;
-    setPageRequest({ cursor: runsPage.nextCursor, direction: "next" });
-  }
-
-  function loadPreviousPage() {
-    if (isRunsLoading || !runsPage.previousCursor || !runsPage.hasPreviousPage) return;
-    setPageRequest({ cursor: runsPage.previousCursor, direction: "previous" });
+    if (runsQuery.isFetchingNextPage || !runsQuery.hasNextPage) return;
+    void runsQuery.fetchNextPage();
   }
 
   return {
     runsPage,
     selectedRunId,
     setSelectedRunId,
-    isRunsLoading,
-    runsError,
-    loadNextPage,
-    loadPreviousPage
+    isRunsLoading: runsQuery.isLoading || runsQuery.isFetchingNextPage,
+    runsError: runsQuery.error instanceof Error ? runsQuery.error.message : null,
+    loadNextPage
   };
 }
 

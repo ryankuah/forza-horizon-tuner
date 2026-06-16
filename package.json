@@ -1,6 +1,6 @@
 {
   "name": "forza-horizon-tuner",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Local telemetry dashboard and setup advisor for Forza Horizon.",
   "author": {
     "name": "Ryan Kuah",
@@ -19,7 +19,7 @@
     "build:renderer": "vite build",
     "build:electron": "esbuild electron/main.ts electron/preload.ts --bundle --platform=node --format=cjs --outdir=dist-electron --out-extension:.js=.cjs --external:better-sqlite3 --external:electron --external:electron-updater",
     "pack": "npm run build && npm run rebuild:electron && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
-    "rebuild:electron": "electron-rebuild -v 38.4.0 -f -w better-sqlite3",
+    "rebuild:electron": "electron-rebuild -v 42.4.0 -f -w better-sqlite3",
     "dist": "npm run build && npm run rebuild:electron && electron-builder",
     "dist:ci": "npm run build && npm run rebuild:electron && electron-builder --publish never",
     "release": "npm run build && npm run rebuild:electron && electron-builder --publish always",
@@ -98,8 +98,9 @@
   "dependencies": {
     "@base-ui/react": "^1.5.0",
     "@fontsource-variable/geist": "^5.2.9",
+    "@tanstack/react-query": "^5.101.0",
     "@vitejs/plugin-react": "^5.1.1",
-    "better-sqlite3": "^12.10.0",
+    "better-sqlite3": "^12.11.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.2",
@@ -109,7 +110,7 @@
     "react-dom": "^19.2.1",
     "tailwind-merge": "^3.6.0",
     "tw-animate-css": "^1.4.0",
-    "vite": "^7.2.7"
+    "vite": "^8.0.16"
   },
   "devDependencies": {
     "@electron/notarize": "^2.5.0",
@@ -119,7 +120,7 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "cross-env": "^10.1.0",
-    "electron": "^38.4.0",
+    "electron": "^42.4.0",
     "electron-builder": "^26.15.3",
     "electron-builder-squirrel-windows": "^26.15.3",
     "esbuild": "^0.28.1",

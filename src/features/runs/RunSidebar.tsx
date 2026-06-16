@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Car, Database, Radio } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { drivetrainLabel, shortRunId } from "@/lib/format";
+import { drivetrainLabel } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { AppPage, CarCatalogItem, RunSummary } from "@/types/telemetry";
 
@@ -112,7 +112,6 @@ function RunSidebarList({
               <Database size={15} />
               Completed runs
             </div>
-            <div className="mt-1 text-sm text-[#9aa39f]">{runs.length.toLocaleString()} loaded</div>
           </div>
           {isLoading ? <Badge className="bg-white/8 text-[#bfc7c3]">Loading</Badge> : null}
         </div>
@@ -126,8 +125,10 @@ function RunSidebarList({
               <button
                 key={run.id}
                 className={cn(
-                  "w-full rounded-lg px-3 py-2.5 text-left transition hover:bg-white/8",
-                  selectedRunId === run.id ? "bg-white/10 text-white" : "text-[#d0d0d0]"
+                  "w-full rounded-lg px-3 py-2.5 text-left transition",
+                  selectedRunId === run.id
+                    ? "bg-white/10 text-white"
+                    : "text-[#d0d0d0] hover:bg-white/[0.04] hover:text-[#ededed]"
                 )}
                 type="button"
                 onClick={() => onSelectRun(run.id)}
@@ -137,11 +138,7 @@ function RunSidebarList({
                   <Badge className={cn("h-5", run.runType === "event" ? "bg-[#59a7ff]/15 text-[#86b7ff]" : "bg-[#63da97]/15 text-[#70e0a6]")}>{run.runType}</Badge>
                 </div>
                 <div className="mt-1 truncate text-xs text-[#8f8f8f]">{formatCar(run, carCatalogByOrdinal)}</div>
-                <div className="mt-2 flex items-center gap-3 text-xs text-[#8f8f8f]">
-                  <span>{run.packetCount.toLocaleString()} pkt</span>
-                  <span>{formatDuration(run)}</span>
-                  <span>{shortRunId(run.id)}</span>
-                </div>
+                <div className="mt-2 text-xs text-[#8f8f8f]">{formatDuration(run)}</div>
               </button>
             ))}
           </div>
@@ -150,9 +147,6 @@ function RunSidebarList({
         ) : null}
         {runs.length > 0 && isLoading ? (
           <div className="px-3 py-3 text-xs font-medium text-[#9aa39f]">Loading older runs...</div>
-        ) : null}
-        {runs.length > 0 && !isLoading && !canLoadNext ? (
-          <div className="px-3 py-3 text-xs font-medium text-[#7f8984]">End of completed runs</div>
         ) : null}
       </div>
     </div>

@@ -135,18 +135,11 @@ function InputTracesPanel({
     : telemetry ? [telemetry] : [];
   const plottedSampleOffset = sampleOffset + graphWindow.sliceStart;
   const currentSample = sampleAtAbsoluteInputIndex(samples, sampleOffset, graphWindow.currentIndex);
-  const windowLabel = samples.length > 0
-    ? `${(graphWindow.sliceStart + 1).toLocaleString()}-${graphWindow.sliceEnd.toLocaleString()} / ${samples.length.toLocaleString()}`
-    : `${plottedSamples.length.toLocaleString()} samples`;
-
   return (
     <section className="grid min-h-0 gap-3 border-border bg-card/80 p-3">
       <div className="flex min-w-0 items-center justify-between gap-3">
         <div className="min-w-0">
           <h2 className="truncate text-sm font-black text-[#f5f7f6]">Input traces</h2>
-          <p className="truncate text-xs font-semibold text-[#9ba6a1]">
-            {windowLabel} / playhead pinned
-          </p>
         </div>
         <span className="shrink-0 text-[10px] font-black uppercase text-[#66736d]">Under map</span>
       </div>

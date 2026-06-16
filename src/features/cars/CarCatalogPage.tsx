@@ -1,8 +1,9 @@
 import * as React from "react";
+import { useQuery } from "@tanstack/react-query";
 import { ArrowDownAZ, ArrowUpAZ, Car, Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { queryCars } from "@/services/api";
+import { queryCars, queryKeys } from "@/services/api";
 import { cn } from "@/lib/utils";
 import type { CarCatalogItem, CarCatalogResult, CarCatalogSortDirection, CarCatalogSortKey } from "@/types/telemetry";
 
@@ -31,30 +32,16 @@ export function CarCatalogPage() {
   const [search, setSearch] = React.useState("");
   const [sortBy, setSortBy] = React.useState<CarCatalogSortKey>("make");
   const [sortDirection, setSortDirection] = React.useState<CarCatalogSortDirection>("asc");
-  const [result, setResult] = React.useState<CarCatalogResult>({ cars: [], total: 0, matched: 0 });
-  const [isLoading, setIsLoading] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    const timeout = window.setTimeout(async () => {
-      setIsLoading(true);
-      setError(null);
-      try {
-        const nextResult = await queryCars({ search, sortBy, sortDirection });
-        if (!cancelled) setResult(nextResult);
-      } catch (caught) {
-        if (!cancelled) setError(caught instanceof Error ? caught.message : String(caught));
-      } finally {
-        if (!cancelled) setIsLoading(false);
-      }
-    }, 120);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timeout);
-    };
-  }, [search, sortBy, sortDirection]);
+  const debouncedSearch = useDebouncedValue(search, 120);
+  const catalogQuery = useQuery({
+    queryKey: queryKeys.cars.catalog({ search: debouncedSearch, sortBy, sortDirection }),
+    queryFn: () => queryCars({ search: debouncedSearch, sortBy, sortDirection }),
+    placeholderData: (previousData) => previousData,
+    staleTime: Infinity
+  });
+  const result: CarCatalogResult = catalogQuery.data ?? { cars: [], total: 0, matched: 0 };
+  const isLoading = catalogQuery.isLoading || search !== debouncedSearch || catalogQuery.isFetching;
+  const error = catalogQuery.error instanceof Error ? catalogQuery.error.message : null;
 
   return (
     <section className="flex min-h-0 flex-1 flex-col gap-4 p-4">
@@ -114,6 +101,17 @@ export function CarCatalogPage() {
       </div>
     </section>
   );
+}
+
+function useDebouncedValue<T>(value: T, delayMs: number) {
+  const [debouncedValue, setDebouncedValue] = React.useState(value);
+
+  React.useEffect(() => {
+    const timeout = window.setTimeout(() => setDebouncedValue(value), delayMs);
+    return () => window.clearTimeout(timeout);
+  }, [delayMs, value]);
+
+  return debouncedValue;
 }
 
 function CarCard({ car }: { car: CarCatalogItem }) {

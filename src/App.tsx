@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, ChevronLeft, ChevronRight, Database, Gauge, Milestone, PanelLeftClose, PanelLeftOpen, RadioReceiver, Route, Settings2, Wifi } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -12,6 +13,7 @@ import { RunSidebar } from "@/features/runs/RunSidebar";
 import { TrackMapPanel } from "@/features/map/TrackMapPanel";
 import { useLiveTelemetry } from "@/hooks/useLiveTelemetry";
 import { useRuns } from "@/hooks/useRuns";
+import { useTelemetryPlayback } from "@/hooks/useTelemetryPlayback";
 import { cn } from "@/lib/utils";
 import { drivetrainLabel, formatValue } from "@/lib/format";
 import {
@@ -19,6 +21,7 @@ import {
   fetchRunSampleWindow,
   fetchRunSectionSamples,
   fetchRunSections,
+  queryKeys,
   queryCars
 } from "@/services/api";
 import type {
@@ -37,6 +40,12 @@ import type {
 const RUN_SAMPLE_WINDOW_SIZE = 3000;
 const SECTION_PAGE_SIZE = 8;
 const EMPTY_SAMPLE_WINDOW: RunSampleWindow = { start: 0, total: 0, samples: [] };
+type RunTelemetryView = "live" | "graph";
+
+function sampleAtAbsoluteIndex(samples: Telemetry[], index: number | null, offset: number, fallback?: Telemetry | null) {
+  if (index === null) return fallback ?? null;
+  return samples[index - offset] ?? fallback ?? null;
+}
 
 export function App() {
   const { state, path: livePath, samples: liveSamples, handleState } = useLiveTelemetry();
@@ -45,22 +54,12 @@ export function App() {
   const [isSidebarHidden, setIsSidebarHidden] = React.useState(false);
   const [isTogglingUdpListening, setIsTogglingUdpListening] = React.useState(false);
   const [dashboardTab, setDashboardTab] = React.useState<DashboardTab>("car");
-  const [carCatalog, setCarCatalog] = React.useState<CarCatalogItem[]>([]);
-
-  React.useEffect(() => {
-    let cancelled = false;
-
-    async function loadCarCatalog() {
-      const result = await queryCars({ sortBy: "make", sortDirection: "asc" });
-      if (!cancelled) setCarCatalog(result.cars);
-    }
-
-    void loadCarCatalog();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const carCatalogQuery = useQuery({
+    queryKey: queryKeys.cars.catalog({ sortBy: "make", sortDirection: "asc" }),
+    queryFn: () => queryCars({ sortBy: "make", sortDirection: "asc" }),
+    staleTime: Infinity
+  });
+  const carCatalog = carCatalogQuery.data?.cars ?? [];
 
   const carCatalogByOrdinal = React.useMemo(() => {
     const carsByOrdinal = new Map<number, CarCatalogItem>();
@@ -414,17 +413,73 @@ function RunCarTab({
   currentSampleIndex: number | null;
 }) {
   const runPath = useRunPath(run.id);
+  const [telemetryView, setTelemetryView] = React.useState<RunTelemetryView>("live");
+  const [hoverIndex, setHoverIndex] = React.useState<number | null>(null);
   const [graphHoverIndex, setGraphHoverIndex] = React.useState<number | null>(null);
+  const playback = useTelemetryPlayback({
+    displayPath: runPath.path,
+    samples: sampleWindow.samples,
+    sampleOffset: sampleWindow.start,
+    selectedRunId: run.id
+  });
+  const latestPathSample = runPath.path.at(-1) ?? null;
+  const hoverPathSample = hoverIndex === null ? null : runPath.path[hoverIndex];
+  const hoverSample = sampleAtAbsoluteIndex(sampleWindow.samples, hoverPathSample?.sampleIndex ?? null, sampleWindow.start, hoverPathSample?.telemetry);
+  const graphHoverSample = sampleAtAbsoluteIndex(sampleWindow.samples, graphHoverIndex, sampleWindow.start);
+  const playheadSample = sampleAtAbsoluteIndex(sampleWindow.samples, playback.playheadIndex, sampleWindow.start);
+  const displayTelemetry = hoverSample
+    ?? graphHoverSample
+    ?? playheadSample
+    ?? latestPathSample?.telemetry
+    ?? telemetry;
+  const displaySampleIndex = playback.playheadIndex
+    ?? latestPathSample?.sampleIndex
+    ?? currentSampleIndex;
+
+  React.useEffect(() => {
+    setHoverIndex(null);
+    setGraphHoverIndex(null);
+    playback.resetPlayback();
+  }, [run.id]);
+
+  React.useEffect(() => {
+    if (hoverIndex !== null && hoverIndex >= runPath.path.length) setHoverIndex(null);
+  }, [hoverIndex, runPath.path.length]);
+
+  function handleScrubPathIndex(index: number | null) {
+    setHoverIndex(null);
+    setGraphHoverIndex(null);
+    playback.scrubPathIndex(index);
+  }
 
   return (
     <section className="grid h-full min-h-0 gap-4 overflow-hidden p-4 lg:grid-cols-2">
       <section className="grid h-full min-h-0 min-w-0 grid-rows-[minmax(0,1fr)_minmax(170px,190px)] gap-4 overflow-hidden">
-        <TrackMapPanel path={runPath.path} />
+        <TrackMapPanel
+          path={runPath.path}
+          hoverIndex={hoverIndex}
+          hoverTelemetry={hoverSample}
+          playheadPathIndex={playback.playheadPathIndex}
+          playheadTelemetry={playheadSample}
+          isPlaying={playback.isPlaying}
+          canPlayTelemetry={playback.canPlayTelemetry}
+          playbackLabel={playback.playbackLabel}
+          playbackSpeed={playback.playbackSpeed}
+          canDecreasePlaybackSpeed={playback.canDecreasePlaybackSpeed}
+          canIncreasePlaybackSpeed={playback.canIncreasePlaybackSpeed}
+          canReturnToLive={playback.canReturnToLive}
+          onHoverIndex={setHoverIndex}
+          onScrubPathIndex={handleScrubPathIndex}
+          onTogglePlayback={playback.togglePlayback}
+          onDecreasePlaybackSpeed={playback.decreasePlaybackSpeed}
+          onIncreasePlaybackSpeed={playback.increasePlaybackSpeed}
+          onReturnToLive={playback.returnToLive}
+        />
         <LiveInputsPanel
-          telemetry={telemetry}
+          telemetry={displayTelemetry}
           samples={sampleWindow.samples}
-          mode="graph"
-          currentSampleIndex={currentSampleIndex}
+          mode={telemetryView}
+          currentSampleIndex={displaySampleIndex}
           sampleOffset={sampleWindow.start}
           hoverSampleIndex={graphHoverIndex}
           onGraphHoverIndex={setGraphHoverIndex}
@@ -432,13 +487,12 @@ function RunCarTab({
       </section>
 
       <TelemetrySidePanel
-        telemetry={telemetry}
+        telemetry={displayTelemetry}
         samples={sampleWindow.samples}
         sampleOffset={sampleWindow.start}
-        currentSampleIndex={currentSampleIndex}
-        mode="graph"
-        showModeToggle={false}
-        onModeChange={() => undefined}
+        currentSampleIndex={displaySampleIndex}
+        mode={telemetryView}
+        onModeChange={setTelemetryView}
         hoverSampleIndex={graphHoverIndex}
         onGraphHoverIndex={setGraphHoverIndex}
       />
@@ -449,79 +503,55 @@ function RunCarTab({
 }
 
 function useRunPath(runId: string) {
-  const [path, setPath] = React.useState<PathSample[]>([]);
-  const [error, setError] = React.useState<string | null>(null);
+  const pathQuery = useQuery({
+    queryKey: queryKeys.runs.path(runId),
+    queryFn: () => fetchRunPath(runId)
+  });
 
-  React.useEffect(() => {
-    let cancelled = false;
-    setPath([]);
-    setError(null);
-
-    fetchRunPath(runId)
-      .then((nextPath) => {
-        if (!cancelled) setPath(nextPath);
-      })
-      .catch((caught) => {
-        if (!cancelled) {
-          setPath([]);
-          setError(caught instanceof Error ? caught.message : String(caught));
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [runId]);
-
-  return { path, error };
+  return {
+    path: pathQuery.data ?? [],
+    error: pathQuery.error instanceof Error ? pathQuery.error.message : null
+  };
 }
 
 function PagedRunSectionsPanel({ runId, type }: { runId: string; type: RunSectionType }) {
-  const [sampleSets, setSampleSets] = React.useState<RunTelemetrySet[]>([]);
-  const [isLoading, setIsLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const sectionsQuery = useQuery({
+    queryKey: [...queryKeys.runs.all, "section-sample-sets", runId, type, SECTION_PAGE_SIZE],
+    queryFn: async () => {
+      const nextSampleSets: RunTelemetrySet[] = [];
+      let page = 0;
+      let total = Infinity;
 
-  React.useEffect(() => {
-    let cancelled = false;
-
-    async function loadSections() {
-      setIsLoading(true);
-      setError(null);
-      setSampleSets([]);
-
-      try {
-        const nextSampleSets: RunTelemetrySet[] = [];
-        let page = 0;
-        let total = Infinity;
-
-        while (!cancelled && page * SECTION_PAGE_SIZE < total) {
-          const sectionPage = await fetchRunSections({ runId, type, page, limit: SECTION_PAGE_SIZE });
-          total = sectionPage.total;
-          const sectionSamples = await Promise.all(sectionPage.sections.map(async (section) => {
-            const result = await fetchRunSectionSamples({ runId, sectionId: section.id });
-            return {
-              runId: section.id,
-              label: "",
-              samples: result?.samples ?? []
-            };
-          }));
-          nextSampleSets.push(...sectionSamples.filter((set) => set.samples.length > 0));
-          if (!cancelled) setSampleSets([...nextSampleSets]);
-          page += 1;
-        }
-      } catch (caught) {
-        if (!cancelled) setError(caught instanceof Error ? caught.message : String(caught));
-      } finally {
-        if (!cancelled) setIsLoading(false);
+      while (page * SECTION_PAGE_SIZE < total) {
+        const sectionQuery = { runId, type, page, limit: SECTION_PAGE_SIZE };
+        const sectionPage = await queryClient.ensureQueryData({
+          queryKey: queryKeys.runs.sectionPage(sectionQuery),
+          queryFn: () => fetchRunSections(sectionQuery)
+        });
+        total = sectionPage.total;
+        const sectionSamples = await Promise.all(sectionPage.sections.map(async (section) => {
+          const sampleQuery = { runId, sectionId: section.id };
+          const result = await queryClient.ensureQueryData({
+            queryKey: queryKeys.runs.sectionSamples(sampleQuery),
+            queryFn: () => fetchRunSectionSamples(sampleQuery)
+          });
+          return {
+            runId: section.id,
+            label: "",
+            samples: result?.samples ?? []
+          };
+        }));
+        nextSampleSets.push(...sectionSamples.filter((set) => set.samples.length > 0));
+        page += 1;
       }
+
+      return nextSampleSets;
     }
-
-    void loadSections();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [runId, type]);
+  });
+  const sampleSets = sectionsQuery.data ?? [];
+  const isLoading = sectionsQuery.isLoading;
+  const error = sectionsQuery.error instanceof Error ? sectionsQuery.error.message : null;
 
   if (sampleSets.length === 0 && isLoading) {
     return (
@@ -553,49 +583,35 @@ function PagedRunSectionsPanel({ runId, type }: { runId: string; type: RunSectio
 }
 
 function useRunSampleWindow(run: RunSummary) {
-  const defaultStart = Math.max(0, run.packetCount - RUN_SAMPLE_WINDOW_SIZE);
-  const [windowStart, setWindowStart] = React.useState(defaultStart);
-  const [sampleWindow, setSampleWindow] = React.useState<RunSampleWindow>(EMPTY_SAMPLE_WINDOW);
-  const [isLoading, setIsLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const windowStart = Math.max(0, run.packetCount - RUN_SAMPLE_WINDOW_SIZE);
+  const sampleWindowQuery = { runId: run.id, start: windowStart, limit: RUN_SAMPLE_WINDOW_SIZE };
+  const query = useQuery({
+    queryKey: queryKeys.runs.sampleWindow(sampleWindowQuery),
+    queryFn: () => fetchRunSampleWindow(sampleWindowQuery)
+  });
 
   React.useEffect(() => {
-    setWindowStart(Math.max(0, run.packetCount - RUN_SAMPLE_WINDOW_SIZE));
-    setSampleWindow(EMPTY_SAMPLE_WINDOW);
-  }, [run.id, run.packetCount]);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    setIsLoading(true);
-    setError(null);
-
-    fetchRunSampleWindow({
-      runId: run.id,
-      start: windowStart,
-      limit: RUN_SAMPLE_WINDOW_SIZE
-    })
-      .then((nextWindow) => {
-        if (!cancelled) setSampleWindow(nextWindow);
-      })
-      .catch((caught) => {
-        if (!cancelled) {
-          setError(caught instanceof Error ? caught.message : String(caught));
-          setSampleWindow(EMPTY_SAMPLE_WINDOW);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoading(false);
+    const sampleWindow = query.data;
+    if (!sampleWindow) return;
+    const previousStart = Math.max(0, sampleWindow.start - RUN_SAMPLE_WINDOW_SIZE);
+    const nextStart = sampleWindow.start + RUN_SAMPLE_WINDOW_SIZE;
+    void queryClient.prefetchQuery({
+      queryKey: queryKeys.runs.sampleWindow({ runId: run.id, start: previousStart, limit: RUN_SAMPLE_WINDOW_SIZE }),
+      queryFn: () => fetchRunSampleWindow({ runId: run.id, start: previousStart, limit: RUN_SAMPLE_WINDOW_SIZE })
+    });
+    if (nextStart < sampleWindow.total) {
+      void queryClient.prefetchQuery({
+        queryKey: queryKeys.runs.sampleWindow({ runId: run.id, start: nextStart, limit: RUN_SAMPLE_WINDOW_SIZE }),
+        queryFn: () => fetchRunSampleWindow({ runId: run.id, start: nextStart, limit: RUN_SAMPLE_WINDOW_SIZE })
       });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [run.id, windowStart]);
+    }
+  }, [query.data, queryClient, run.id]);
 
   return {
-    sampleWindow,
-    isLoading,
-    error
+    sampleWindow: query.data ?? EMPTY_SAMPLE_WINDOW,
+    isLoading: query.isLoading,
+    error: query.error instanceof Error ? query.error.message : null
   };
 }
 

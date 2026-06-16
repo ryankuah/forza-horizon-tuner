@@ -1,18 +1,40 @@
 import * as React from "react";
-import { Minus, Plus, RotateCcw } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, Minus, Pause, Play, Plus, Radio, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export function MapControls({
   canZoomIn,
   canZoomOut,
+  canPlayTelemetry = false,
+  isPlaying = false,
   zoomPct,
+  playbackLabel = "0:00 / 0:00",
+  playbackSpeed = 1,
+  canDecreasePlaybackSpeed = false,
+  canIncreasePlaybackSpeed = false,
+  canReturnToLive = false,
+  onTogglePlayback,
+  onDecreasePlaybackSpeed,
+  onIncreasePlaybackSpeed,
+  onReturnToLive,
   onZoomIn,
   onZoomOut,
   onReset
 }: {
   canZoomIn: boolean;
   canZoomOut: boolean;
+  canPlayTelemetry?: boolean;
+  isPlaying?: boolean;
   zoomPct: number;
+  playbackLabel?: string;
+  playbackSpeed?: number;
+  canDecreasePlaybackSpeed?: boolean;
+  canIncreasePlaybackSpeed?: boolean;
+  canReturnToLive?: boolean;
+  onTogglePlayback?: () => void;
+  onDecreasePlaybackSpeed?: () => void;
+  onIncreasePlaybackSpeed?: () => void;
+  onReturnToLive?: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onReset: () => void;
@@ -36,6 +58,55 @@ export function MapControls({
       onPointerUp={stopControlEvent}
       onWheel={stopControlEvent}
     >
+      {onTogglePlayback ? (
+        <>
+          <Button type="button" variant="ghost" size="icon" className="h-9 w-9 rounded-none border-r border-border"
+            onClick={(event) => {
+              stopControlEvent(event);
+              onTogglePlayback();
+            }}
+            disabled={!canPlayTelemetry}
+            aria-label={isPlaying ? "Pause telemetry playback" : "Play telemetry playback"}
+            title={isPlaying ? "Pause telemetry playback" : "Play telemetry playback"}
+          >
+            {isPlaying ? <Pause size={15} strokeWidth={2.4} /> : <Play size={15} strokeWidth={2.4} />}
+          </Button>
+          <span className="min-w-24 border-r border-border px-2 text-center text-[11px] font-bold tabular-nums text-[#c7d0cb]">
+            {playbackLabel}
+          </span>
+          {canReturnToLive && onReturnToLive ? (
+            <Button type="button" variant="ghost" size="icon" className="h-9 w-9 rounded-none border-r border-border text-[#70e0a6]"
+              onClick={(event) => {
+                stopControlEvent(event);
+                onReturnToLive();
+              }}
+              aria-label="Return to live telemetry"
+              title="Return to live telemetry"
+            ><Radio size={15} strokeWidth={2.4} /></Button>
+          ) : null}
+          <Button type="button" variant="ghost" size="icon" className="h-9 w-9 rounded-none border-r border-border"
+            onClick={(event) => {
+              stopControlEvent(event);
+              onDecreasePlaybackSpeed?.();
+            }}
+            disabled={!canDecreasePlaybackSpeed}
+            aria-label="Decrease playback speed"
+            title="Decrease playback speed"
+          ><ChevronsLeft size={15} strokeWidth={2.4} /></Button>
+          <span className="min-w-12 border-r border-border px-2 text-center text-[11px] font-bold tabular-nums text-[#c7d0cb]">
+            {playbackSpeed}x
+          </span>
+          <Button type="button" variant="ghost" size="icon" className="h-9 w-9 rounded-none border-r border-border"
+            onClick={(event) => {
+              stopControlEvent(event);
+              onIncreasePlaybackSpeed?.();
+            }}
+            disabled={!canIncreasePlaybackSpeed}
+            aria-label="Increase playback speed"
+            title="Increase playback speed"
+          ><ChevronsRight size={15} strokeWidth={2.4} /></Button>
+        </>
+      ) : null}
       <Button type="button" variant="ghost" size="icon" className="h-9 w-9 rounded-none border-r border-border"
         onClick={(event) => {
           stopControlEvent(event);
